@@ -16,3 +16,4 @@ Planned sources:
 - Preset generated photos.
 - Immich shared album.
 - SMB folders through an in-app SMB client, not a macOS Finder mount.
+# RevivalFrame
