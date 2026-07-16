@@ -18,8 +18,9 @@ private enum TransitionMode: Int {
     case slide
     case zoom
     case dissolve
+    case kenBurns
 
-    static let all: [TransitionMode] = [.fade, .slide, .zoom, .dissolve]
+    static let all: [TransitionMode] = [.fade, .slide, .zoom, .dissolve, .kenBurns]
 
     var title: String {
         switch self {
@@ -27,6 +28,7 @@ private enum TransitionMode: Int {
         case .slide: return "Slide"
         case .zoom: return "Zoom"
         case .dissolve: return "Dissolve"
+        case .kenBurns: return "Ken Burns"
         }
     }
 }
@@ -87,6 +89,17 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
     private var cachedFileURLs: [URL: URL] = [:]
     private var deferredPrefetchURLs = Set<URL>()
     private var randomIndexQueue: [Int] = []
+    private var kenBurnsDirection = CGPoint(x: 1, y: 1)
+
+    private enum Preferences {
+        static let sourceType = "sourceType"
+        static let immichLink = "immichLink"
+        static let transitionMode = "transitionMode"
+        static let playbackOrder = "playbackOrder"
+        static let interval = "interval"
+        static let cacheSizeMB = "cacheSizeMB"
+        static let settingsTab = "settingsTab"
+    }
 
     override var prefersStatusBarHidden: Bool {
         return true
@@ -98,11 +111,13 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
 
     override func viewDidLoad() {
         super.viewDidLoad()
+        loadPreferences()
         configureImageCache()
         clearImageCache()
         buildInterface()
         showPhoto(at: 0, animated: false)
         updatePlaybackSummary()
+        restoreLastSourceIfNeeded()
     }
 
     override func viewDidDisappear(_ animated: Bool) {
@@ -115,6 +130,7 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
 
         imageView.translatesAutoresizingMaskIntoConstraints = false
         imageView.contentMode = .scaleAspectFit
+        imageView.clipsToBounds = true
         imageView.backgroundColor = .black
         view.addSubview(imageView)
 
@@ -266,7 +282,8 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
             settingsContent.heightAnchor.constraint(equalToConstant: 335)
         ])
 
-        showPresetsSettings()
+        settingsTabs.selectedSegmentIndex = UserDefaults.standard.integer(forKey: Preferences.settingsTab)
+        showSelectedSettingsTab()
     }
 
     private func makeControlButton(title: String, action: Selector) -> UIButton {
@@ -342,6 +359,7 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
         immichTextView.autocorrectionType = .no
         immichTextView.autocapitalizationType = .none
         immichTextView.keyboardType = .URL
+        immichTextView.text = UserDefaults.standard.string(forKey: Preferences.immichLink) ?? immichTextView.text
 
         let loadButton = makeSettingsButton(title: "Load Immich Album", action: #selector(loadImmich))
         let stack = UIStackView(arrangedSubviews: [
@@ -407,6 +425,58 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
         stack.axis = .vertical
         stack.spacing = 8
         replaceSettingsContent(with: stack)
+    }
+
+    private func loadPreferences() {
+        let defaults = UserDefaults.standard
+        if defaults.object(forKey: Preferences.transitionMode) != nil {
+            transitionMode = TransitionMode(rawValue: defaults.integer(forKey: Preferences.transitionMode)) ?? transitionMode
+        }
+        if defaults.object(forKey: Preferences.playbackOrder) != nil {
+            playbackOrder = PlaybackOrder(rawValue: defaults.integer(forKey: Preferences.playbackOrder)) ?? playbackOrder
+        }
+        if defaults.object(forKey: Preferences.interval) != nil {
+            interval = TimeInterval(max(5, defaults.integer(forKey: Preferences.interval)))
+        }
+        if defaults.object(forKey: Preferences.cacheSizeMB) != nil {
+            let savedCacheSize = defaults.integer(forKey: Preferences.cacheSizeMB)
+            if cacheSizeOptionsMB.contains(savedCacheSize) {
+                cacheSizeMB = savedCacheSize
+            }
+        }
+        if let savedSource = defaults.string(forKey: Preferences.sourceType), savedSource == PhotoSourceType.immich.title {
+            sourceType = .immich
+        }
+    }
+
+    private func savePlaybackPreferences() {
+        let defaults = UserDefaults.standard
+        defaults.set(transitionMode.rawValue, forKey: Preferences.transitionMode)
+        defaults.set(playbackOrder.rawValue, forKey: Preferences.playbackOrder)
+        defaults.set(Int(interval), forKey: Preferences.interval)
+        defaults.set(cacheSizeMB, forKey: Preferences.cacheSizeMB)
+    }
+
+    private func saveSourcePreference(_ source: PhotoSourceType) {
+        UserDefaults.standard.set(source.title, forKey: Preferences.sourceType)
+    }
+
+    private func restoreLastSourceIfNeeded() {
+        guard sourceType == .immich,
+              let link = UserDefaults.standard.string(forKey: Preferences.immichLink),
+              !link.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return
+        }
+        immichTextView.text = link
+        loadImmichFromStoredLink(link, automatic: true)
+    }
+
+    private func showSelectedSettingsTab() {
+        switch settingsTabs.selectedSegmentIndex {
+        case 0: showPresetsSettings()
+        case 1: showImmichSettings()
+        default: showPlaybackSettings()
+        }
     }
 
     private func scheduleNextPhotoTimer() {
@@ -718,49 +788,120 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
     }
 
     private func display(image: UIImage, animated: Bool, completion: (() -> Void)? = nil) {
+        imageView.layer.removeAllAnimations()
+        imageView.transform = .identity
+        imageView.contentMode = transitionMode == .kenBurns ? .scaleAspectFill : .scaleAspectFit
+
         guard animated else {
             imageView.image = image
+            if transitionMode == .kenBurns {
+                startKenBurnsAnimation()
+            }
             completion?()
             return
         }
 
         switch transitionMode {
-        case .fade, .dissolve:
-            let duration: TimeInterval = transitionMode == .dissolve ? 1.1 : 0.65
-            UIView.transition(with: imageView, duration: duration, options: [.transitionCrossDissolve, .allowUserInteraction]) {
+        case .fade, .kenBurns:
+            UIView.transition(with: imageView, duration: 1.5, options: [.transitionCrossDissolve, .allowUserInteraction]) {
                 self.imageView.image = image
             } completion: { _ in
+                if self.transitionMode == .kenBurns {
+                    self.startKenBurnsAnimation()
+                }
                 completion?()
             }
+        case .dissolve:
+            UIView.animate(withDuration: 1.2, delay: 0, options: [.curveEaseInOut, .allowUserInteraction], animations: {
+                self.imageView.alpha = 0
+            }, completion: { _ in
+                self.imageView.image = image
+                UIView.animate(withDuration: 1.2, delay: 0.15, options: [.curveEaseInOut, .allowUserInteraction], animations: {
+                    self.imageView.alpha = 1
+                }, completion: { _ in
+                    completion?()
+                })
+            })
         case .slide:
             let nextImageView = overlayImageView(image: image)
-            nextImageView.transform = CGAffineTransform(translationX: view.bounds.width * 0.08, y: 0)
+            nextImageView.transform = randomSlideTransform()
             nextImageView.alpha = 0
-            UIView.animate(withDuration: 0.7, delay: 0, options: [.curveEaseInOut, .allowUserInteraction], animations: {
+            UIView.animate(withDuration: 1.6, delay: 0, options: [.curveEaseInOut, .allowUserInteraction], animations: {
                 nextImageView.transform = .identity
                 nextImageView.alpha = 1
                 self.imageView.alpha = 0
             }, completion: { _ in
                 self.imageView.image = image
                 self.imageView.alpha = 1
+                self.imageView.transform = .identity
+                self.imageView.contentMode = .scaleAspectFit
                 nextImageView.removeFromSuperview()
                 completion?()
             })
         case .zoom:
             let nextImageView = overlayImageView(image: image)
-            nextImageView.transform = CGAffineTransform(scaleX: 1.06, y: 1.06)
+            nextImageView.transform = CGAffineTransform(scaleX: 1.16, y: 1.16)
             nextImageView.alpha = 0
-            UIView.animate(withDuration: 0.8, delay: 0, options: [.curveEaseInOut, .allowUserInteraction], animations: {
+            UIView.animate(withDuration: 1.7, delay: 0, options: [.curveEaseInOut, .allowUserInteraction], animations: {
                 nextImageView.transform = .identity
                 nextImageView.alpha = 1
                 self.imageView.alpha = 0
             }, completion: { _ in
                 self.imageView.image = image
                 self.imageView.alpha = 1
+                self.imageView.transform = .identity
+                self.imageView.contentMode = .scaleAspectFit
                 nextImageView.removeFromSuperview()
                 completion?()
             })
         }
+    }
+
+    private func startKenBurnsAnimation() {
+        imageView.layer.removeAllAnimations()
+        imageView.contentMode = .scaleAspectFill
+        imageView.transform = kenBurnsStartTransform()
+        UIView.animate(withDuration: max(interval * 1.6, interval + 6), delay: 0, options: [.curveLinear, .allowUserInteraction], animations: {
+            self.imageView.transform = self.kenBurnsEndTransform()
+        }, completion: nil)
+    }
+
+    private func kenBurnsStartTransform() -> CGAffineTransform {
+        let direction = Int(arc4random_uniform(4))
+        switch direction {
+        case 0:
+            kenBurnsDirection = CGPoint(x: -1, y: -1)
+        case 1:
+            kenBurnsDirection = CGPoint(x: 1, y: -1)
+        case 2:
+            kenBurnsDirection = CGPoint(x: -1, y: 1)
+        default:
+            kenBurnsDirection = CGPoint(x: 1, y: 1)
+        }
+        return .identity
+    }
+
+    private func kenBurnsEndTransform() -> CGAffineTransform {
+        let translateX = view.bounds.width * 0.02
+        let translateY = view.bounds.height * 0.02
+        return CGAffineTransform(translationX: kenBurnsDirection.x * translateX, y: kenBurnsDirection.y * translateY).scaledBy(x: 1.08, y: 1.08)
+    }
+
+    private func randomSlideTransform() -> CGAffineTransform {
+        let horizontalDistance = view.bounds.width * 0.14
+        let verticalDistance = view.bounds.height * 0.14
+        let directions: [CGPoint] = [
+            CGPoint(x: 1, y: 0),
+            CGPoint(x: -1, y: 0),
+            CGPoint(x: 0, y: 1),
+            CGPoint(x: 0, y: -1),
+            CGPoint(x: 1, y: 1),
+            CGPoint(x: -1, y: 1),
+            CGPoint(x: 1, y: -1),
+            CGPoint(x: -1, y: -1)
+        ]
+        let direction = directions.randomElement() ?? CGPoint(x: 1, y: 0)
+        return CGAffineTransform(translationX: direction.x * horizontalDistance, y: direction.y * verticalDistance)
     }
 
     private func overlayImageView(image: UIImage) -> UIImageView {
@@ -863,22 +1004,26 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
 
     @objc private func settingsTabChanged() {
         view.endEditing(true)
-        switch settingsTabs.selectedSegmentIndex {
-        case 0: showPresetsSettings()
-        case 1: showImmichSettings()
-        default: showPlaybackSettings()
-        }
+        UserDefaults.standard.set(settingsTabs.selectedSegmentIndex, forKey: Preferences.settingsTab)
+        showSelectedSettingsTab()
     }
 
     @objc private func usePresets() {
         cancelRemoteImageLoads()
         clearImageCache()
+        saveSourcePreference(.presets)
         applyPhotos(FramePhoto.presets(), source: .presets, status: "Loaded 4 preset landscape photos.")
     }
 
     @objc private func loadImmich() {
         view.endEditing(true)
         let link = immichTextView.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        UserDefaults.standard.set(link, forKey: Preferences.immichLink)
+        saveSourcePreference(.immich)
+        loadImmichFromStoredLink(link, automatic: false)
+    }
+
+    private func loadImmichFromStoredLink(_ link: String, automatic: Bool) {
         statusLabel.text = "Loading Immich shared album..."
         immichClient.loadSharedAlbum(link) { [weak self] result in
             DispatchQueue.main.async {
@@ -886,7 +1031,8 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
                 switch result {
                 case .success(let album):
                     let photos = album.photoURLs.map { FramePhoto(title: $0.lastPathComponent.isEmpty ? $0.absoluteString : $0.lastPathComponent, image: nil, remoteURL: $0) }
-                    self.applyPhotos(photos, source: .immich, status: "Loaded \(photos.count) of \(album.assetCount) Immich photo(s).")
+                    let prefix = automatic ? "Restored" : "Loaded"
+                    self.applyPhotos(photos, source: .immich, status: "\(prefix) \(photos.count) of \(album.assetCount) Immich photo(s).")
                 case .failure(let error):
                     self.statusLabel.text = error.localizedDescription
                 }
@@ -896,11 +1042,13 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
 
     @objc private func transitionChanged() {
         transitionMode = TransitionMode(rawValue: transitionControl.selectedSegmentIndex) ?? .fade
+        savePlaybackPreferences()
         updatePlaybackSummary()
     }
 
     @objc private func orderChanged() {
         playbackOrder = PlaybackOrder(rawValue: orderControl.selectedSegmentIndex) ?? .sequential
+        savePlaybackPreferences()
         cancelRemoteImageLoads()
         clearImageCache()
         resetRandomQueue()
@@ -911,6 +1059,7 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
 
     @objc private func intervalChanged() {
         interval = TimeInterval(max(5, Int(intervalSlider.value.rounded())))
+        savePlaybackPreferences()
         updatePlaybackSummary()
     }
 
@@ -920,6 +1069,7 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
         configureImageCache()
         clearImageCache()
         cancelRemoteImageLoads()
+        savePlaybackPreferences()
         statusLabel.text = "Image cache set to \(cacheSizeMB) MB."
         showPhoto(at: currentIndex, animated: false)
     }
