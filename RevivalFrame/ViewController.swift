@@ -4,11 +4,13 @@ import ImageIO
 private enum PhotoSourceType {
     case presets
     case immich
+    case smb
 
     var title: String {
         switch self {
         case .presets: return "Presets"
         case .immich: return "Immich"
+        case .smb: return "SMB"
         }
     }
 }
@@ -45,7 +47,7 @@ private enum PlaybackOrder: Int {
     }
 }
 
-final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecognizerDelegate {
+final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecognizerDelegate, UITableViewDataSource, UITableViewDelegate {
     private let imageView = UIImageView()
     private let topPanel = UIVisualEffectView(effect: UIBlurEffect(style: .dark))
     private let titleLabel = UILabel()
@@ -54,10 +56,17 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
     private let playPauseButton = UIButton(type: .system)
     private let summaryLabel = UILabel()
     private let settingsPanel = UIVisualEffectView(effect: UIBlurEffect(style: .dark))
-    private let settingsTabs = UISegmentedControl(items: ["Presets", "Immich", "Playback"])
+    private let settingsTabs = UISegmentedControl(items: ["Presets", "Immich", "SMB", "Playback"])
     private let settingsContent = UIView()
     private let statusLabel = UILabel()
     private let immichTextView = UITextView()
+    private let smbURLField = UITextField()
+    private let smbUsernameField = UITextField()
+    private let smbPasswordField = UITextField()
+    private let smbDirectoryTableView = UITableView(frame: .zero, style: .plain)
+    private let smbPathLabel = UILabel()
+    private let smbConnectButton = UIButton(type: .system)
+    private let smbApplyButton = UIButton(type: .system)
     private let intervalSlider = UISlider()
     private let intervalValueLabel = UILabel()
     private let transitionControl = UISegmentedControl(items: TransitionMode.all.map { $0.title })
@@ -69,6 +78,7 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
 
     private let cacheSizeOptionsMB = [100, 300, 500]
     private let maxConcurrentRemoteLoads = 1
+    private let smbLoader = SMBPhotoLoader()
     private var photos: [FramePhoto] = FramePhoto.presets()
     private var currentIndex = 0
     private var isPlaying = true
@@ -90,10 +100,20 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
     private var deferredPrefetchURLs = Set<URL>()
     private var randomIndexQueue: [Int] = []
     private var kenBurnsDirection = CGPoint(x: 1, y: 1)
+    private var smbConnection: SMBConnection?
+    private var smbCurrentDirectory: SMBDirectory?
+    private var smbDirectoryStack: [SMBDirectory] = []
+    private var settingsPanelLeadingConstraint: NSLayoutConstraint?
+    private var settingsPanelTrailingConstraint: NSLayoutConstraint?
+    private var settingsPanelWidthConstraint: NSLayoutConstraint?
+    private var settingsContentHeightConstraint: NSLayoutConstraint?
+    private var smbDirectoryHeightConstraint: NSLayoutConstraint?
 
     private enum Preferences {
         static let sourceType = "sourceType"
         static let immichLink = "immichLink"
+        static let smbURL = "smbURL"
+        static let smbUsername = "smbUsername"
         static let transitionMode = "transitionMode"
         static let playbackOrder = "playbackOrder"
         static let interval = "interval"
@@ -123,6 +143,23 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
     override func viewDidDisappear(_ animated: Bool) {
         super.viewDidDisappear(animated)
         timer?.invalidate()
+    }
+
+    override func viewDidLayoutSubviews() {
+        super.viewDidLayoutSubviews()
+        updateSettingsLayout()
+    }
+
+    override func viewWillTransition(to size: CGSize, with coordinator: UIViewControllerTransitionCoordinator) {
+        super.viewWillTransition(to: size, with: coordinator)
+        coordinator.animate(alongsideTransition: nil) { [weak self] _ in
+            guard let self = self else { return }
+            if self.settingsTabs.selectedSegmentIndex == 2 {
+                self.showSMBSettings()
+            } else {
+                self.updateSettingsLayout()
+            }
+        }
     }
 
     private func buildInterface() {
@@ -269,21 +306,27 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
         stack.translatesAutoresizingMaskIntoConstraints = false
         settingsPanel.contentView.addSubview(stack)
 
+        settingsPanelLeadingConstraint = settingsPanel.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor, constant: 18)
+        settingsPanelTrailingConstraint = settingsPanel.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -18)
+        settingsPanelWidthConstraint = settingsPanel.widthAnchor.constraint(equalToConstant: 430)
+        settingsContentHeightConstraint = settingsContent.heightAnchor.constraint(equalToConstant: 335)
+
         NSLayoutConstraint.activate([
-            settingsPanel.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -18),
+            settingsPanelTrailingConstraint!,
+            settingsPanelWidthConstraint!,
             settingsPanel.topAnchor.constraint(equalTo: topPanel.bottomAnchor, constant: 12),
-            settingsPanel.widthAnchor.constraint(equalToConstant: 430),
             settingsPanel.bottomAnchor.constraint(lessThanOrEqualTo: bottomPanel.topAnchor, constant: -12),
 
             stack.leadingAnchor.constraint(equalTo: settingsPanel.contentView.leadingAnchor, constant: 16),
             stack.trailingAnchor.constraint(equalTo: settingsPanel.contentView.trailingAnchor, constant: -16),
             stack.topAnchor.constraint(equalTo: settingsPanel.contentView.topAnchor, constant: 16),
             stack.bottomAnchor.constraint(equalTo: settingsPanel.contentView.bottomAnchor, constant: -16),
-            settingsContent.heightAnchor.constraint(equalToConstant: 335)
+            settingsContentHeightConstraint!
         ])
 
         settingsTabs.selectedSegmentIndex = UserDefaults.standard.integer(forKey: Preferences.settingsTab)
         showSelectedSettingsTab()
+        updateSettingsLayout()
     }
 
     private func makeControlButton(title: String, action: Selector) -> UIButton {
@@ -324,6 +367,30 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
         return button
     }
 
+    private func configureSettingsButton(_ button: UIButton, title: String, action: Selector) {
+        button.setTitle(title, for: .normal)
+        button.removeTarget(nil, action: nil, for: .touchUpInside)
+        button.addTarget(self, action: action, for: .touchUpInside)
+        button.setTitleColor(.white, for: .normal)
+        button.setTitleColor(UIColor(white: 1, alpha: 0.45), for: .disabled)
+        button.titleLabel?.font = UIFont.systemFont(ofSize: 14, weight: .semibold)
+        button.contentEdgeInsets = UIEdgeInsets(top: 10, left: 14, bottom: 10, right: 14)
+        button.backgroundColor = UIColor(red: 0.22, green: 0.42, blue: 0.64, alpha: 1)
+        button.layer.cornerRadius = 9
+    }
+
+    private func configureSMBTextField(_ field: UITextField, placeholder: String, secure: Bool = false) {
+        field.font = UIFont.systemFont(ofSize: 13)
+        field.textColor = .black
+        field.backgroundColor = .white
+        field.borderStyle = .roundedRect
+        field.placeholder = placeholder
+        field.autocorrectionType = .no
+        field.autocapitalizationType = .none
+        field.clearButtonMode = .whileEditing
+        field.isSecureTextEntry = secure
+    }
+
     private func replaceSettingsContent(with content: UIView) {
         settingsContent.subviews.forEach { $0.removeFromSuperview() }
         content.translatesAutoresizingMaskIntoConstraints = false
@@ -332,7 +399,7 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
             content.leadingAnchor.constraint(equalTo: settingsContent.leadingAnchor),
             content.trailingAnchor.constraint(equalTo: settingsContent.trailingAnchor),
             content.topAnchor.constraint(equalTo: settingsContent.topAnchor),
-            content.bottomAnchor.constraint(lessThanOrEqualTo: settingsContent.bottomAnchor)
+            content.bottomAnchor.constraint(equalTo: settingsContent.bottomAnchor)
         ])
     }
 
@@ -372,6 +439,99 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
         stack.spacing = 10
         immichTextView.heightAnchor.constraint(equalToConstant: 96).isActive = true
         replaceSettingsContent(with: stack)
+    }
+
+    private func showSMBSettings() {
+        configureSMBTextField(smbURLField, placeholder: "smb://server/share/folder")
+        configureSMBTextField(smbUsernameField, placeholder: "SMB username")
+        configureSMBTextField(smbPasswordField, placeholder: "SMB password", secure: true)
+        smbURLField.keyboardType = .URL
+        smbURLField.text = UserDefaults.standard.string(forKey: Preferences.smbURL) ?? smbURLField.text
+        smbUsernameField.text = UserDefaults.standard.string(forKey: Preferences.smbUsername) ?? smbUsernameField.text
+
+        configureSettingsButton(smbConnectButton, title: "Connect", action: #selector(connectSMB))
+        configureSettingsButton(smbApplyButton, title: "Select", action: #selector(applySelectedSMBFolder))
+        smbApplyButton.isEnabled = smbCurrentDirectory != nil
+
+        smbPathLabel.font = UIFont.systemFont(ofSize: 12, weight: .regular)
+        smbPathLabel.textColor = UIColor(white: 0.78, alpha: 1)
+        smbPathLabel.numberOfLines = 2
+        updateSMBPathLabel()
+
+        smbDirectoryTableView.dataSource = self
+        smbDirectoryTableView.delegate = self
+        smbDirectoryTableView.backgroundColor = UIColor(white: 0, alpha: 0.22)
+        smbDirectoryTableView.separatorColor = UIColor(white: 1, alpha: 0.12)
+        smbDirectoryTableView.layer.cornerRadius = 8
+        smbDirectoryTableView.clipsToBounds = true
+        smbDirectoryTableView.tableFooterView = UIView()
+
+        let credentialsRow = UIStackView(arrangedSubviews: [smbUsernameField, smbPasswordField])
+        credentialsRow.axis = .horizontal
+        credentialsRow.spacing = 8
+        credentialsRow.distribution = .fillEqually
+
+        let buttonRow = UIStackView(arrangedSubviews: [smbConnectButton, smbApplyButton])
+        buttonRow.axis = .horizontal
+        buttonRow.spacing = 8
+        buttonRow.alignment = .center
+        buttonRow.distribution = .fillEqually
+        smbConnectButton.heightAnchor.constraint(equalToConstant: 34).isActive = true
+        smbApplyButton.heightAnchor.constraint(equalToConstant: 34).isActive = true
+
+        let formStack = UIStackView(arrangedSubviews: [
+            makeSettingsLabel("SMB URL"),
+            smbURLField,
+            makeSettingsLabel("Credentials"),
+            credentialsRow,
+            buttonRow
+        ])
+        formStack.axis = .vertical
+        formStack.spacing = 7
+
+        let directoryStack = UIStackView(arrangedSubviews: [
+            makeSettingsLabel("Connected folders"),
+            smbPathLabel,
+            smbDirectoryTableView
+        ])
+        directoryStack.axis = .vertical
+        directoryStack.spacing = 7
+
+        let connected = smbConnection != nil
+        let landscape = view.bounds.width > view.bounds.height
+        let stack = UIStackView(arrangedSubviews: landscape && connected ? [formStack, directoryStack] : [formStack, directoryStack])
+        if landscape && connected {
+            stack.axis = .horizontal
+            stack.alignment = .fill
+            stack.distribution = .fill
+            formStack.widthAnchor.constraint(equalToConstant: 360).isActive = true
+        } else {
+            stack.axis = .vertical
+            stack.alignment = .fill
+            stack.distribution = .fill
+        }
+        stack.spacing = 7
+        stack.translatesAutoresizingMaskIntoConstraints = false
+
+        smbURLField.heightAnchor.constraint(equalToConstant: 36).isActive = true
+        smbUsernameField.heightAnchor.constraint(equalToConstant: 36).isActive = true
+        smbPasswordField.heightAnchor.constraint(equalToConstant: 36).isActive = true
+        smbDirectoryHeightConstraint?.isActive = false
+        smbDirectoryHeightConstraint = smbDirectoryTableView.heightAnchor.constraint(equalToConstant: connected ? (landscape ? 280 : 260) : 80)
+        smbDirectoryHeightConstraint?.isActive = true
+
+        let scrollView = UIScrollView()
+        scrollView.addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.leadingAnchor.constraint(equalTo: scrollView.contentLayoutGuide.leadingAnchor),
+            stack.trailingAnchor.constraint(equalTo: scrollView.contentLayoutGuide.trailingAnchor),
+            stack.topAnchor.constraint(equalTo: scrollView.contentLayoutGuide.topAnchor),
+            stack.bottomAnchor.constraint(equalTo: scrollView.contentLayoutGuide.bottomAnchor),
+            stack.widthAnchor.constraint(equalTo: scrollView.frameLayoutGuide.widthAnchor)
+        ])
+        replaceSettingsContent(with: scrollView)
+        smbDirectoryTableView.reloadData()
+        updateSettingsLayout()
     }
 
     private func showPlaybackSettings() {
@@ -444,8 +604,12 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
                 cacheSizeMB = savedCacheSize
             }
         }
-        if let savedSource = defaults.string(forKey: Preferences.sourceType), savedSource == PhotoSourceType.immich.title {
-            sourceType = .immich
+        if let savedSource = defaults.string(forKey: Preferences.sourceType) {
+            if savedSource == PhotoSourceType.immich.title {
+                sourceType = .immich
+            } else if savedSource == PhotoSourceType.smb.title {
+                sourceType = .smb
+            }
         }
     }
 
@@ -475,7 +639,29 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
         switch settingsTabs.selectedSegmentIndex {
         case 0: showPresetsSettings()
         case 1: showImmichSettings()
+        case 2: showSMBSettings()
         default: showPlaybackSettings()
+        }
+        updateSettingsLayout()
+    }
+
+    private func updateSettingsLayout() {
+        guard isViewLoaded else { return }
+        let smbTabActive = settingsTabs.selectedSegmentIndex == 2
+        let connectedSMB = smbConnection != nil
+        let landscape = view.bounds.width > view.bounds.height
+        let expandedLandscapeSMB = smbTabActive && connectedSMB && landscape
+
+        settingsPanelLeadingConstraint?.isActive = expandedLandscapeSMB
+        settingsPanelWidthConstraint?.isActive = !expandedLandscapeSMB
+        settingsPanelTrailingConstraint?.isActive = true
+
+        if smbTabActive && connectedSMB {
+            settingsContentHeightConstraint?.constant = landscape ? 335 : min(560, max(420, view.bounds.height - 430))
+            smbDirectoryHeightConstraint?.constant = landscape ? 280 : min(380, max(240, (settingsContentHeightConstraint?.constant ?? 420) - 170))
+        } else {
+            settingsContentHeightConstraint?.constant = 335
+            smbDirectoryHeightConstraint?.constant = 80
         }
     }
 
@@ -567,6 +753,11 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
             return
         }
 
+        if url.scheme?.lowercased() == "smb" {
+            loadSMBImage(url, shouldDecode: shouldDecode, completion: completion)
+            return
+        }
+
         if remoteImageCompletions[url] != nil {
             remoteImageCompletions[url]?.append(completion)
             remoteImageNeedsDecode[url] = (remoteImageNeedsDecode[url] ?? false) || shouldDecode
@@ -593,7 +784,7 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
             }
 
             DispatchQueue.main.async {
-                var loadedImage: UIImage?
+                let loadedImage: UIImage? = nil
                 if let fileURL = storedFileURL {
                     self.storeCachedFile(at: fileURL, for: url, cost: cost)
                     if self.remoteImageNeedsDecode[url] == true {
@@ -627,13 +818,74 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
         updateCacheStatus()
     }
 
+    private func loadSMBImage(_ url: URL, shouldDecode: Bool, completion: @escaping (UIImage?) -> Void) {
+        guard let connection = smbConnection else {
+            completion(nil)
+            return
+        }
+
+        if remoteImageCompletions[url] != nil {
+            remoteImageCompletions[url]?.append(completion)
+            remoteImageNeedsDecode[url] = (remoteImageNeedsDecode[url] ?? false) || shouldDecode
+            return
+        }
+
+        remoteImageCompletions[url] = [completion]
+        remoteImageNeedsDecode[url] = shouldDecode
+        let requestedFileURL = temporaryCacheFileURL(for: url)
+        let smbPath = url.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        smbLoader.downloadFile(at: smbPath, connection: connection, destination: requestedFileURL) { [weak self] result in
+            DispatchQueue.main.async {
+                guard let self = self else { return }
+                switch result {
+                case .success(let downloadedFileURL):
+                    let cost = max(1, ((try? FileManager.default.attributesOfItem(atPath: downloadedFileURL.path)[.size] as? NSNumber)?.intValue) ?? 1)
+                    if self.remoteImageNeedsDecode[url] == true {
+                        DispatchQueue.global(qos: .userInitiated).async {
+                            let image = self.downsampledImage(at: downloadedFileURL)
+                            DispatchQueue.main.async {
+                                self.storeCachedFile(at: downloadedFileURL, for: url, cost: cost)
+                                if let image = image {
+                                    self.imageCache.setObject(image, forKey: url as NSURL)
+                                } else {
+                                    self.statusLabel.text = "Unable to decode SMB photo: \(url.lastPathComponent)"
+                                    NSLog("RevivalFrame SMB decode failed for %@", url.path)
+                                }
+                                let completions = self.remoteImageCompletions.removeValue(forKey: url) ?? []
+                                self.remoteImageNeedsDecode.removeValue(forKey: url)
+                                self.updateCacheStatus()
+                                completions.forEach { $0(image) }
+                                self.prefetchUpcomingPhotos(after: self.currentIndex)
+                            }
+                        }
+                        return
+                    }
+                    self.storeCachedFile(at: downloadedFileURL, for: url, cost: cost)
+                    let completions = self.remoteImageCompletions.removeValue(forKey: url) ?? []
+                    self.remoteImageNeedsDecode.removeValue(forKey: url)
+                    self.updateCacheStatus()
+                    completions.forEach { $0(nil) }
+                    self.prefetchUpcomingPhotos(after: self.currentIndex)
+                case .failure(let error):
+                    self.statusLabel.text = "Unable to load SMB photo: \(url.lastPathComponent)"
+                    NSLog("RevivalFrame SMB download failed for %@: %@", url.path, error.localizedDescription)
+                    let completions = self.remoteImageCompletions.removeValue(forKey: url) ?? []
+                    self.remoteImageNeedsDecode.removeValue(forKey: url)
+                    self.updateCacheStatus()
+                    completions.forEach { $0(nil) }
+                }
+            }
+        }
+        updateCacheStatus()
+    }
+
     private func prefetchUpcomingPhotos(after index: Int) {
         guard photos.count > 1, cachedImageBytes < cacheLimitBytes else {
             updateCacheStatus()
             return
         }
 
-        while cachedImageBytes < cacheLimitBytes && remoteImageTasks.count < maxConcurrentRemoteLoads {
+        while cachedImageBytes < cacheLimitBytes && remoteImageCompletions.count < maxConcurrentRemoteLoads {
             guard let url = nextPrefetchURL(after: index) else { break }
             loadRemoteImage(url, shouldDecode: false) { _ in }
         }
@@ -648,6 +900,7 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
                 if let url = photos[next].remoteURL,
                    cachedFileURLs[url] == nil,
                    remoteImageTasks[url] == nil,
+                   remoteImageCompletions[url] == nil,
                    !deferredPrefetchURLs.contains(url) {
                     return url
                 }
@@ -660,6 +913,7 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
             if let url = photos[next].remoteURL,
                cachedFileURLs[url] == nil,
                remoteImageTasks[url] == nil,
+               remoteImageCompletions[url] == nil,
                !deferredPrefetchURLs.contains(url) {
                 return url
             }
@@ -677,7 +931,7 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
 
     private func updateCacheStatus() {
         guard isViewLoaded else { return }
-        cacheStatusLabel.text = "Temp cache \(formatBytes(cachedImageBytes)) / \(cacheSizeMB) MB. Active downloads: \(remoteImageTasks.count). Played files are deleted immediately."
+        cacheStatusLabel.text = "Temp cache \(formatBytes(cachedImageBytes)) / \(cacheSizeMB) MB. Active downloads: \(remoteImageCompletions.count). Played files are deleted immediately."
     }
 
     private var cacheLimitBytes: Int {
@@ -1009,6 +1263,7 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
     }
 
     @objc private func usePresets() {
+        disconnectSMB()
         cancelRemoteImageLoads()
         clearImageCache()
         saveSourcePreference(.presets)
@@ -1017,6 +1272,7 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
 
     @objc private func loadImmich() {
         view.endEditing(true)
+        disconnectSMB()
         let link = immichTextView.text.trimmingCharacters(in: .whitespacesAndNewlines)
         UserDefaults.standard.set(link, forKey: Preferences.immichLink)
         saveSourcePreference(.immich)
@@ -1037,6 +1293,101 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
                     self.statusLabel.text = error.localizedDescription
                 }
             }
+        }
+    }
+
+    @objc private func connectSMB() {
+        view.endEditing(true)
+        cancelRemoteImageLoads()
+        clearImageCache()
+        disconnectSMB()
+
+        let url = (smbURLField.text ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let username = (smbUsernameField.text ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let password = smbPasswordField.text ?? ""
+        UserDefaults.standard.set(url, forKey: Preferences.smbURL)
+        UserDefaults.standard.set(username, forKey: Preferences.smbUsername)
+        saveSourcePreference(.smb)
+        statusLabel.text = "Connecting SMB..."
+        smbConnectButton.isEnabled = false
+
+        smbLoader.connect(to: url, username: username, password: password) { [weak self] result in
+            DispatchQueue.main.async {
+                guard let self = self else { return }
+                self.smbConnectButton.isEnabled = true
+                switch result {
+                case .success(let connection):
+                    self.sourceType = .smb
+                    self.smbConnection = connection
+                    self.smbDirectoryStack = [connection.rootDirectory]
+                    self.smbCurrentDirectory = connection.rootDirectory
+                    if self.settingsTabs.selectedSegmentIndex == 2 {
+                        self.showSMBSettings()
+                    } else {
+                        self.smbDirectoryTableView.reloadData()
+                        self.updateSMBPathLabel()
+                    }
+                    self.statusLabel.text = "Connected SMB. Select a folder, then apply it for playback."
+                    self.updatePlaybackSummary()
+                case .failure(let error):
+                    self.smbCurrentDirectory = nil
+                    self.smbDirectoryStack.removeAll()
+                    self.smbDirectoryTableView.reloadData()
+                    self.updateSMBPathLabel()
+                    self.updateSettingsLayout()
+                    self.statusLabel.text = error.localizedDescription
+                }
+            }
+        }
+    }
+
+    @objc private func backSMBDirectory() {
+        guard smbDirectoryStack.count > 1 else { return }
+        smbDirectoryStack.removeLast()
+        smbCurrentDirectory = smbDirectoryStack.last
+        smbDirectoryTableView.reloadData()
+        updateSMBPathLabel()
+    }
+
+    @objc private func applySelectedSMBFolder() {
+        guard let connection = smbConnection,
+              let directory = smbCurrentDirectory else {
+            statusLabel.text = "Connect SMB and select a folder first."
+            return
+        }
+        statusLabel.text = "Loading SMB photos..."
+        smbLoader.loadPhotos(in: directory, connection: connection) { [weak self] result in
+            DispatchQueue.main.async {
+                guard let self = self else { return }
+                switch result {
+                case .success(let photos):
+                    self.applyPhotos(photos, source: .smb, status: "Loaded \(photos.count) SMB photo(s) from \(directory.name).")
+                case .failure(let error):
+                    self.statusLabel.text = error.localizedDescription
+                }
+            }
+        }
+    }
+
+    private func disconnectSMB() {
+        if let connection = smbConnection {
+            smbLoader.disconnect(connection)
+        }
+        smbConnection = nil
+        smbCurrentDirectory = nil
+        smbDirectoryStack.removeAll()
+        smbDirectoryTableView.reloadData()
+        updateSMBPathLabel()
+    }
+
+    private func updateSMBPathLabel() {
+        guard isViewLoaded else { return }
+        if let directory = smbCurrentDirectory {
+            smbPathLabel.text = directory.displayPath
+            smbApplyButton.isEnabled = true
+        } else {
+            smbPathLabel.text = "Not connected."
+            smbApplyButton.isEnabled = false
         }
     }
 
@@ -1072,6 +1423,54 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
         savePlaybackPreferences()
         statusLabel.text = "Image cache set to \(cacheSizeMB) MB."
         showPhoto(at: currentIndex, animated: false)
+    }
+
+    func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
+        guard tableView == smbDirectoryTableView else { return 0 }
+        return smbCurrentDirectory?.children.count ?? 0
+    }
+
+    func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
+        let identifier = "SMBDirectoryCell"
+        let cell = tableView.dequeueReusableCell(withIdentifier: identifier) ?? UITableViewCell(style: .subtitle, reuseIdentifier: identifier)
+        if let child = smbCurrentDirectory?.children[indexPath.row] {
+            cell.textLabel?.text = child.name
+            cell.detailTextLabel?.text = child.displayPath
+            cell.accessoryType = .disclosureIndicator
+        } else {
+            cell.textLabel?.text = ""
+            cell.detailTextLabel?.text = nil
+            cell.accessoryType = .none
+        }
+        cell.backgroundColor = .clear
+        cell.textLabel?.textColor = .white
+        cell.detailTextLabel?.textColor = UIColor(white: 0.75, alpha: 1)
+        return cell
+    }
+
+    func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
+        tableView.deselectRow(at: indexPath, animated: true)
+        guard tableView == smbDirectoryTableView,
+              let child = smbCurrentDirectory?.children[indexPath.row] else {
+            return
+        }
+        guard let connection = smbConnection else { return }
+        statusLabel.text = "Loading SMB folder..."
+        smbLoader.loadDirectory(path: child.path, displayPath: child.displayPath, connection: connection) { [weak self] result in
+            DispatchQueue.main.async {
+                guard let self = self else { return }
+                switch result {
+                case .success(let loadedDirectory):
+                    self.smbDirectoryStack.append(loadedDirectory)
+                    self.smbCurrentDirectory = loadedDirectory
+                    self.smbDirectoryTableView.reloadData()
+                    self.updateSMBPathLabel()
+                    self.statusLabel.text = "Select a folder, then apply it for playback."
+                case .failure(let error):
+                    self.statusLabel.text = error.localizedDescription
+                }
+            }
+        }
     }
 }
 
@@ -1147,6 +1546,172 @@ private struct FramePhoto {
         context.closePath()
         context.setFillColor(color.cgColor)
         context.fillPath()
+    }
+}
+
+private struct SMBConnection {
+    let displayName: String
+    let client: SMB2ClientWrapper
+    let rootDirectory: SMBDirectory
+}
+
+private struct SMBDirectory {
+    let name: String
+    let displayPath: String
+    let path: String
+    let children: [SMBDirectory]
+}
+
+private enum SMBError: LocalizedError {
+    case invalidURL
+    case noPhotos(String)
+
+    var errorDescription: String? {
+        switch self {
+        case .invalidURL:
+            return "Enter an SMB URL like smb://server/share/folder."
+        case .noPhotos(let folder):
+            return "No supported photo files were found in \(folder)."
+        }
+    }
+}
+
+private final class SMBPhotoLoader {
+    private let supportedExtensions = Set(["jpg", "jpeg", "png", "heic", "heif", "webp", "bmp"])
+
+    func connect(to rawURL: String, username: String, password: String, completion: @escaping (Result<SMBConnection, Error>) -> Void) {
+        do {
+            _ = try parseSMBURL(rawURL)
+        } catch {
+            completion(.failure(error))
+            return
+        }
+
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                let client = try SMB2ClientWrapper(urlString: rawURL, username: username, password: password)
+                let root = try self.loadDirectorySync(path: client.rootPath, displayPath: client.displayName, client: client)
+                completion(.success(SMBConnection(displayName: client.displayName, client: client, rootDirectory: root)))
+            } catch {
+                completion(.failure(error))
+            }
+        }
+    }
+
+    func disconnect(_ connection: SMBConnection) {
+        connection.client.disconnect()
+    }
+
+    func loadDirectory(path: String, displayPath: String, connection: SMBConnection, completion: @escaping (Result<SMBDirectory, Error>) -> Void) {
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                completion(.success(try self.loadDirectorySync(path: path, displayPath: displayPath, client: connection.client)))
+            } catch {
+                completion(.failure(error))
+            }
+        }
+    }
+
+    func loadPhotos(in directory: SMBDirectory, connection: SMBConnection, completion: @escaping (Result<[FramePhoto], Error>) -> Void) {
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                let photos = try self.photoURLsRecursively(in: directory, client: connection.client)
+                    .map { FramePhoto(title: $0.lastPathComponent, image: nil, remoteURL: $0) }
+                    .sorted { $0.title.localizedStandardCompare($1.title) == .orderedAscending }
+                guard !photos.isEmpty else {
+                    throw SMBError.noPhotos(directory.displayPath)
+                }
+                completion(.success(photos))
+            } catch {
+                completion(.failure(error))
+            }
+        }
+    }
+
+    func downloadFile(at path: String, connection: SMBConnection, destination: URL, completion: @escaping (Result<URL, Error>) -> Void) {
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                try connection.client.downloadFile(atPath: path, toLocalPath: destination.path)
+                completion(.success(destination))
+            } catch {
+                completion(.failure(error))
+            }
+        }
+    }
+
+    private func loadDirectorySync(path: String, displayPath: String, client: SMB2ClientWrapper) throws -> SMBDirectory {
+        let files = try client.contentsOfDirectory(atPath: path)
+        let children = files
+            .filter { $0.directory }
+            .map { file -> SMBDirectory in
+                let childDisplayPath = displayPath.appendingPathComponentForDisplay(file.name)
+                return SMBDirectory(
+                    name: file.name,
+                    displayPath: childDisplayPath,
+                    path: file.path,
+                    children: []
+                )
+            }
+            .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+
+        let name = URL(string: displayPath)?.lastPathComponent ?? displayPath
+        return SMBDirectory(name: name.isEmpty ? displayPath : name, displayPath: displayPath, path: path, children: children)
+    }
+
+    private func photoURLsRecursively(in directory: SMBDirectory, client: SMB2ClientWrapper) throws -> [URL] {
+        let paths = try client.photoPathsRecursively(atPath: directory.path, supportedExtensions: supportedExtensions)
+        return paths.compactMap { path in
+            var components = URLComponents()
+            components.scheme = "smb"
+            components.host = "revivalframe"
+            components.path = path.hasPrefix("/") ? path : "/\(path)"
+            return components.url
+        }
+    }
+
+    private func parseSMBURL(_ value: String) throws -> ParsedSMBURL {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let components = URLComponents(string: trimmed),
+              components.scheme?.lowercased() == "smb",
+              let host = components.host,
+              !host.isEmpty else {
+            throw SMBError.invalidURL
+        }
+
+        let parts = components.path.split(separator: "/").map(String.init)
+        guard let share = parts.first, !share.isEmpty else {
+            throw SMBError.invalidURL
+        }
+
+        let hostAndPort = components.port.map { "\(host):\($0)" } ?? host
+        let subpath = parts.dropFirst().joined(separator: "/")
+        let displayName = subpath.isEmpty ? "smb://\(hostAndPort)/\(share)" : "smb://\(hostAndPort)/\(share)/\(subpath)"
+        return ParsedSMBURL(host: host, hostAndPort: hostAndPort, share: share, subpath: subpath, displayName: displayName)
+    }
+}
+
+private struct ParsedSMBURL {
+    let host: String
+    let hostAndPort: String
+    let share: String
+    let subpath: String
+    let displayName: String
+}
+
+private extension String {
+    var isIPv4Address: Bool {
+        var address = in_addr()
+        return withCString { inet_aton($0, &address) } == 1
+    }
+
+    var pathExtensionLowercased: String {
+        return (self as NSString).pathExtension.lowercased()
+    }
+
+    func appendingPathComponentForDisplay(_ component: String) -> String {
+        let trimmed = trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        let child = component.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        return "\(trimmed)/\(child)"
     }
 }
 
