@@ -55,7 +55,7 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
     private let bottomPanel = UIVisualEffectView(effect: UIBlurEffect(style: .dark))
     private let playPauseButton = UIButton(type: .system)
     private let summaryLabel = UILabel()
-    private let settingsPanel = UIVisualEffectView(effect: UIBlurEffect(style: .dark))
+    private let settingsPanel = UIVisualEffectView(effect: UIBlurEffect(style: .extraLight))
     private let settingsTabs = UISegmentedControl(items: ["Presets", "Immich", "SMB", "Playback"])
     private let settingsContent = UIView()
     private let statusLabel = UILabel()
@@ -66,6 +66,7 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
     private let smbDirectoryTableView = UITableView(frame: .zero, style: .plain)
     private let smbPathLabel = UILabel()
     private let smbConnectButton = UIButton(type: .system)
+    private let smbBackButton = UIButton(type: .system)
     private let smbApplyButton = UIButton(type: .system)
     private let intervalSlider = UISlider()
     private let intervalValueLabel = UILabel()
@@ -103,11 +104,36 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
     private var smbConnection: SMBConnection?
     private var smbCurrentDirectory: SMBDirectory?
     private var smbDirectoryStack: [SMBDirectory] = []
+    private var isApplyingSMBFolder = false
+    private var activeSMBApplyID = UUID()
+    private var smbApplyTimeoutTimer: Timer?
+    private var pendingSMBApplyID: UUID?
+    private var pendingSMBApplyFirstURL: URL?
     private var settingsPanelLeadingConstraint: NSLayoutConstraint?
     private var settingsPanelTrailingConstraint: NSLayoutConstraint?
     private var settingsPanelWidthConstraint: NSLayoutConstraint?
     private var settingsContentHeightConstraint: NSLayoutConstraint?
     private var smbDirectoryHeightConstraint: NSLayoutConstraint?
+
+    private var settingsGroupedBackground: UIColor {
+        return UIColor(red: 0.94, green: 0.94, blue: 0.96, alpha: 1)
+    }
+
+    private var settingsPrimaryText: UIColor {
+        return UIColor(red: 0.08, green: 0.08, blue: 0.09, alpha: 1)
+    }
+
+    private var settingsSecondaryText: UIColor {
+        return UIColor(red: 0.43, green: 0.43, blue: 0.46, alpha: 1)
+    }
+
+    private var settingsSeparator: UIColor {
+        return UIColor(red: 0.78, green: 0.78, blue: 0.80, alpha: 1)
+    }
+
+    private var settingsBlue: UIColor {
+        return UIColor(red: 0, green: 0.48, blue: 1, alpha: 1)
+    }
 
     private enum Preferences {
         static let sourceType = "sourceType"
@@ -143,6 +169,7 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
     override func viewDidDisappear(_ animated: Bool) {
         super.viewDidDisappear(animated)
         timer?.invalidate()
+        smbApplyTimeoutTimer?.invalidate()
     }
 
     override func viewDidLayoutSubviews() {
@@ -271,18 +298,19 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
 
     private func buildSettingsPanel() {
         settingsPanel.translatesAutoresizingMaskIntoConstraints = false
-        settingsPanel.layer.cornerRadius = 18
+        settingsPanel.layer.cornerRadius = 12
         settingsPanel.clipsToBounds = true
         settingsPanel.isHidden = true
         settingsPanel.alpha = 0
+        settingsPanel.contentView.backgroundColor = settingsGroupedBackground
         view.addSubview(settingsPanel)
 
         let heading = UILabel()
         heading.text = "Settings"
-        heading.font = UIFont.systemFont(ofSize: 18, weight: .semibold)
-        heading.textColor = .white
+        heading.font = UIFont.systemFont(ofSize: 17, weight: .semibold)
+        heading.textColor = settingsPrimaryText
 
-        let closeButton = makeControlButton(title: "Done", action: #selector(toggleSettings))
+        let closeButton = makeSettingsPlainButton(title: "Done", action: #selector(toggleSettings), weight: .semibold)
         let headingRow = UIStackView(arrangedSubviews: [heading, closeButton])
         headingRow.axis = .horizontal
         headingRow.alignment = .center
@@ -290,13 +318,14 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
 
         settingsTabs.selectedSegmentIndex = 0
         settingsTabs.addTarget(self, action: #selector(settingsTabChanged), for: .valueChanged)
-        settingsTabs.tintColor = .white
+        settingsTabs.tintColor = settingsBlue
+        settingsTabs.backgroundColor = .white
 
         settingsContent.translatesAutoresizingMaskIntoConstraints = false
-        settingsContent.backgroundColor = .clear
+        settingsContent.backgroundColor = settingsGroupedBackground
 
         statusLabel.font = UIFont.systemFont(ofSize: 12, weight: .regular)
-        statusLabel.textColor = UIColor(white: 0.82, alpha: 1)
+        statusLabel.textColor = settingsSecondaryText
         statusLabel.numberOfLines = 3
         statusLabel.text = "Presets are ready."
 
@@ -350,38 +379,90 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
         let label = UILabel()
         label.text = text
         label.font = UIFont.systemFont(ofSize: 13, weight: .regular)
-        label.textColor = UIColor(white: 0.83, alpha: 1)
+        label.textColor = settingsSecondaryText
         label.numberOfLines = 0
         return label
     }
 
-    private func makeSettingsButton(title: String, action: Selector) -> UIButton {
+    private func makeSettingsTitleLabel(_ text: String) -> UILabel {
+        let label = UILabel()
+        label.text = text.uppercased()
+        label.font = UIFont.systemFont(ofSize: 12, weight: .regular)
+        label.textColor = settingsSecondaryText
+        label.numberOfLines = 1
+        return label
+    }
+
+    private func makeSettingsGroup(_ arrangedSubviews: [UIView]) -> UIView {
+        let stack = UIStackView(arrangedSubviews: arrangedSubviews)
+        stack.axis = .vertical
+        stack.spacing = 10
+        stack.translatesAutoresizingMaskIntoConstraints = false
+
+        let container = UIView()
+        container.backgroundColor = .white
+        container.layer.cornerRadius = 8
+        container.layer.borderWidth = 0.5
+        container.layer.borderColor = settingsSeparator.cgColor
+        container.addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 14),
+            stack.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -14),
+            stack.topAnchor.constraint(equalTo: container.topAnchor, constant: 12),
+            stack.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -12)
+        ])
+        return container
+    }
+
+    private func verticalSettingsGroups(_ groups: [UIView]) -> UIStackView {
+        let stack = UIStackView(arrangedSubviews: groups)
+        stack.axis = .vertical
+        stack.spacing = 10
+        stack.alignment = .fill
+        stack.distribution = .fill
+        return stack
+    }
+
+    private func horizontalSettingsGroups(_ groups: [UIView]) -> UIStackView {
+        let stack = UIStackView(arrangedSubviews: groups)
+        stack.axis = .horizontal
+        stack.spacing = 10
+        stack.alignment = .fill
+        stack.distribution = .fill
+        return stack
+    }
+
+    private func makeSettingsPlainButton(title: String, action: Selector, weight: UIFont.Weight = .regular) -> UIButton {
         let button = UIButton(type: .system)
         button.setTitle(title, for: .normal)
         button.addTarget(self, action: action, for: .touchUpInside)
-        button.setTitleColor(.white, for: .normal)
-        button.titleLabel?.font = UIFont.systemFont(ofSize: 14, weight: .semibold)
-        button.contentEdgeInsets = UIEdgeInsets(top: 10, left: 14, bottom: 10, right: 14)
-        button.backgroundColor = UIColor(red: 0.22, green: 0.42, blue: 0.64, alpha: 1)
-        button.layer.cornerRadius = 9
+        button.setTitleColor(settingsBlue, for: .normal)
+        button.setTitleColor(UIColor(red: 0, green: 0.48, blue: 1, alpha: 0.35), for: .disabled)
+        button.titleLabel?.font = UIFont.systemFont(ofSize: 17, weight: weight)
+        button.contentEdgeInsets = UIEdgeInsets(top: 6, left: 6, bottom: 6, right: 6)
+        button.backgroundColor = .clear
         return button
+    }
+
+    private func makeSettingsButton(title: String, action: Selector) -> UIButton {
+        return makeSettingsPlainButton(title: title, action: action)
     }
 
     private func configureSettingsButton(_ button: UIButton, title: String, action: Selector) {
         button.setTitle(title, for: .normal)
         button.removeTarget(nil, action: nil, for: .touchUpInside)
         button.addTarget(self, action: action, for: .touchUpInside)
-        button.setTitleColor(.white, for: .normal)
-        button.setTitleColor(UIColor(white: 1, alpha: 0.45), for: .disabled)
-        button.titleLabel?.font = UIFont.systemFont(ofSize: 14, weight: .semibold)
-        button.contentEdgeInsets = UIEdgeInsets(top: 10, left: 14, bottom: 10, right: 14)
-        button.backgroundColor = UIColor(red: 0.22, green: 0.42, blue: 0.64, alpha: 1)
-        button.layer.cornerRadius = 9
+        button.setTitleColor(settingsBlue, for: .normal)
+        button.setTitleColor(UIColor(red: 0, green: 0.48, blue: 1, alpha: 0.35), for: .disabled)
+        button.titleLabel?.font = UIFont.systemFont(ofSize: 17, weight: .regular)
+        button.contentEdgeInsets = UIEdgeInsets(top: 6, left: 8, bottom: 6, right: 8)
+        button.backgroundColor = .clear
+        button.layer.cornerRadius = 0
     }
 
     private func configureSMBTextField(_ field: UITextField, placeholder: String, secure: Bool = false) {
-        field.font = UIFont.systemFont(ofSize: 13)
-        field.textColor = .black
+        field.font = UIFont.systemFont(ofSize: 16)
+        field.textColor = settingsPrimaryText
         field.backgroundColor = .white
         field.borderStyle = .roundedRect
         field.placeholder = placeholder
@@ -391,37 +472,43 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
         field.isSecureTextEntry = secure
     }
 
-    private func replaceSettingsContent(with content: UIView) {
+    private func replaceSettingsContent(with content: UIView, fillVertically: Bool = false) {
         settingsContent.subviews.forEach { $0.removeFromSuperview() }
         content.translatesAutoresizingMaskIntoConstraints = false
         settingsContent.addSubview(content)
+        let bottomConstraint = fillVertically
+            ? content.bottomAnchor.constraint(equalTo: settingsContent.bottomAnchor)
+            : content.bottomAnchor.constraint(lessThanOrEqualTo: settingsContent.bottomAnchor)
         NSLayoutConstraint.activate([
             content.leadingAnchor.constraint(equalTo: settingsContent.leadingAnchor),
             content.trailingAnchor.constraint(equalTo: settingsContent.trailingAnchor),
             content.topAnchor.constraint(equalTo: settingsContent.topAnchor),
-            content.bottomAnchor.constraint(equalTo: settingsContent.bottomAnchor)
+            bottomConstraint
         ])
     }
 
     private func showPresetsSettings() {
         let useButton = makeSettingsButton(title: "Use Preset Landscapes", action: #selector(usePresets))
         let stack = UIStackView(arrangedSubviews: [
-            makeSettingsLabel("Default source"),
-            makeSettingsLabel("Four generated landscape photos are available offline and are useful for checking playback, transitions, and full-screen framing."),
-            useButton
+            makeSettingsTitleLabel("Default source"),
+            makeSettingsGroup([
+                makeSettingsLabel("Four generated landscape photos are available offline and are useful for checking playback, transitions, and full-screen framing."),
+                useButton
+            ])
         ])
         stack.axis = .vertical
-        stack.spacing = 10
+        stack.spacing = 8
         replaceSettingsContent(with: stack)
     }
 
     private func showImmichSettings() {
-        let label = makeSettingsLabel("Shared album link")
         immichTextView.delegate = self
-        immichTextView.font = UIFont.systemFont(ofSize: 13)
-        immichTextView.textColor = .black
+        immichTextView.font = UIFont.systemFont(ofSize: 16)
+        immichTextView.textColor = settingsPrimaryText
         immichTextView.backgroundColor = .white
-        immichTextView.layer.cornerRadius = 8
+        immichTextView.layer.cornerRadius = 6
+        immichTextView.layer.borderWidth = 0.5
+        immichTextView.layer.borderColor = settingsSeparator.cgColor
         immichTextView.textContainerInset = UIEdgeInsets(top: 8, left: 6, bottom: 8, right: 6)
         immichTextView.autocorrectionType = .no
         immichTextView.autocapitalizationType = .none
@@ -430,13 +517,15 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
 
         let loadButton = makeSettingsButton(title: "Load Immich Album", action: #selector(loadImmich))
         let stack = UIStackView(arrangedSubviews: [
-            label,
-            immichTextView,
-            makeSettingsLabel("Paste an Immich shared album URL. RevivalFrame reads the shared link directly and displays the album photos."),
-            loadButton
+            makeSettingsTitleLabel("Shared album link"),
+            makeSettingsGroup([
+                immichTextView,
+                makeSettingsLabel("Paste an Immich shared album URL. RevivalFrame reads the shared link directly and displays the album photos."),
+                loadButton
+            ])
         ])
         stack.axis = .vertical
-        stack.spacing = 10
+        stack.spacing = 8
         immichTextView.heightAnchor.constraint(equalToConstant: 96).isActive = true
         replaceSettingsContent(with: stack)
     }
@@ -450,19 +539,22 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
         smbUsernameField.text = UserDefaults.standard.string(forKey: Preferences.smbUsername) ?? smbUsernameField.text
 
         configureSettingsButton(smbConnectButton, title: "Connect", action: #selector(connectSMB))
-        configureSettingsButton(smbApplyButton, title: "Select", action: #selector(applySelectedSMBFolder))
-        smbApplyButton.isEnabled = smbCurrentDirectory != nil
+        configureSettingsButton(smbBackButton, title: "Back", action: #selector(backSMBDirectory))
+        configureSettingsButton(smbApplyButton, title: "Load", action: #selector(applySelectedSMBFolder))
+        updateSMBActionButtons()
 
         smbPathLabel.font = UIFont.systemFont(ofSize: 12, weight: .regular)
-        smbPathLabel.textColor = UIColor(white: 0.78, alpha: 1)
+        smbPathLabel.textColor = settingsSecondaryText
         smbPathLabel.numberOfLines = 2
         updateSMBPathLabel()
 
         smbDirectoryTableView.dataSource = self
         smbDirectoryTableView.delegate = self
-        smbDirectoryTableView.backgroundColor = UIColor(white: 0, alpha: 0.22)
-        smbDirectoryTableView.separatorColor = UIColor(white: 1, alpha: 0.12)
-        smbDirectoryTableView.layer.cornerRadius = 8
+        smbDirectoryTableView.backgroundColor = .white
+        smbDirectoryTableView.separatorColor = settingsSeparator
+        smbDirectoryTableView.layer.cornerRadius = 6
+        smbDirectoryTableView.layer.borderWidth = 0.5
+        smbDirectoryTableView.layer.borderColor = settingsSeparator.cgColor
         smbDirectoryTableView.clipsToBounds = true
         smbDirectoryTableView.tableFooterView = UIView()
 
@@ -471,46 +563,43 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
         credentialsRow.spacing = 8
         credentialsRow.distribution = .fillEqually
 
-        let buttonRow = UIStackView(arrangedSubviews: [smbConnectButton, smbApplyButton])
+        let buttonRow = UIStackView(arrangedSubviews: [smbConnectButton, smbBackButton, smbApplyButton])
         buttonRow.axis = .horizontal
         buttonRow.spacing = 8
         buttonRow.alignment = .center
         buttonRow.distribution = .fillEqually
         smbConnectButton.heightAnchor.constraint(equalToConstant: 34).isActive = true
+        smbBackButton.heightAnchor.constraint(equalToConstant: 34).isActive = true
         smbApplyButton.heightAnchor.constraint(equalToConstant: 34).isActive = true
 
-        let formStack = UIStackView(arrangedSubviews: [
+        let formGroup = makeSettingsGroup([
             makeSettingsLabel("SMB URL"),
             smbURLField,
             makeSettingsLabel("Credentials"),
             credentialsRow,
             buttonRow
         ])
-        formStack.axis = .vertical
-        formStack.spacing = 7
 
-        let directoryStack = UIStackView(arrangedSubviews: [
+        let directoryGroup = makeSettingsGroup([
             makeSettingsLabel("Connected folders"),
             smbPathLabel,
             smbDirectoryTableView
         ])
-        directoryStack.axis = .vertical
-        directoryStack.spacing = 7
 
         let connected = smbConnection != nil
         let landscape = view.bounds.width > view.bounds.height
-        let stack = UIStackView(arrangedSubviews: landscape && connected ? [formStack, directoryStack] : [formStack, directoryStack])
+        let stack = UIStackView(arrangedSubviews: [
+            makeSettingsTitleLabel("SMB source"),
+            landscape && connected ? horizontalSettingsGroups([formGroup, directoryGroup]) : verticalSettingsGroups([formGroup, directoryGroup])
+        ])
+        stack.axis = .vertical
+        stack.spacing = 8
+
         if landscape && connected {
-            stack.axis = .horizontal
-            stack.alignment = .fill
-            stack.distribution = .fill
-            formStack.widthAnchor.constraint(equalToConstant: 360).isActive = true
+            formGroup.widthAnchor.constraint(equalToConstant: 360).isActive = true
         } else {
-            stack.axis = .vertical
             stack.alignment = .fill
-            stack.distribution = .fill
         }
-        stack.spacing = 7
         stack.translatesAutoresizingMaskIntoConstraints = false
 
         smbURLField.heightAnchor.constraint(equalToConstant: 36).isActive = true
@@ -529,7 +618,7 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
             stack.bottomAnchor.constraint(equalTo: scrollView.contentLayoutGuide.bottomAnchor),
             stack.widthAnchor.constraint(equalTo: scrollView.frameLayoutGuide.widthAnchor)
         ])
-        replaceSettingsContent(with: scrollView)
+        replaceSettingsContent(with: scrollView, fillVertically: true)
         smbDirectoryTableView.reloadData()
         updateSettingsLayout()
     }
@@ -538,21 +627,24 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
         transitionControl.selectedSegmentIndex = transitionMode.rawValue
         transitionControl.removeTarget(nil, action: nil, for: .valueChanged)
         transitionControl.addTarget(self, action: #selector(transitionChanged), for: .valueChanged)
-        transitionControl.tintColor = .white
+        transitionControl.tintColor = settingsBlue
+        transitionControl.backgroundColor = .white
 
         orderControl.selectedSegmentIndex = playbackOrder.rawValue
         orderControl.removeTarget(nil, action: nil, for: .valueChanged)
         orderControl.addTarget(self, action: #selector(orderChanged), for: .valueChanged)
-        orderControl.tintColor = .white
+        orderControl.tintColor = settingsBlue
+        orderControl.backgroundColor = .white
 
         intervalSlider.minimumValue = 5
         intervalSlider.maximumValue = 60
         intervalSlider.value = Float(interval)
         intervalSlider.removeTarget(nil, action: nil, for: .valueChanged)
         intervalSlider.addTarget(self, action: #selector(intervalChanged), for: .valueChanged)
+        intervalSlider.tintColor = settingsBlue
 
         intervalValueLabel.font = UIFont.monospacedDigitSystemFont(ofSize: 13, weight: .regular)
-        intervalValueLabel.textColor = .white
+        intervalValueLabel.textColor = settingsPrimaryText
         intervalValueLabel.text = "\(Int(interval))s"
 
         let intervalRow = UIStackView(arrangedSubviews: [intervalSlider, intervalValueLabel])
@@ -564,23 +656,27 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
         cacheSizeControl.selectedSegmentIndex = cacheSizeOptionsMB.firstIndex(of: cacheSizeMB) ?? 1
         cacheSizeControl.removeTarget(nil, action: nil, for: .valueChanged)
         cacheSizeControl.addTarget(self, action: #selector(cacheSizeChanged), for: .valueChanged)
-        cacheSizeControl.tintColor = .white
+        cacheSizeControl.tintColor = settingsBlue
+        cacheSizeControl.backgroundColor = .white
 
         cacheStatusLabel.font = UIFont.systemFont(ofSize: 12, weight: .regular)
-        cacheStatusLabel.textColor = UIColor(white: 0.78, alpha: 1)
+        cacheStatusLabel.textColor = settingsSecondaryText
         cacheStatusLabel.numberOfLines = 2
         updateCacheStatus()
 
         let stack = UIStackView(arrangedSubviews: [
-            makeSettingsLabel("Transition"),
-            transitionControl,
-            makeSettingsLabel("Display order"),
-            orderControl,
-            makeSettingsLabel("Photo duration"),
-            intervalRow,
-            makeSettingsLabel("Immich cache size"),
-            cacheSizeControl,
-            cacheStatusLabel
+            makeSettingsTitleLabel("Playback"),
+            makeSettingsGroup([
+                makeSettingsLabel("Transition"),
+                transitionControl,
+                makeSettingsLabel("Display order"),
+                orderControl,
+                makeSettingsLabel("Photo duration"),
+                intervalRow,
+                makeSettingsLabel("Cache size"),
+                cacheSizeControl,
+                cacheStatusLabel
+            ])
         ])
         stack.axis = .vertical
         stack.spacing = 8
@@ -702,9 +798,12 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
             prefetchUpcomingPhotos(after: index)
             return
         }
+        let smbApplyIDForPhoto = pendingSMBApplyFirstURL == remoteURL ? pendingSMBApplyID : nil
 
         if let cached = imageCache.object(forKey: remoteURL as NSURL) {
-            displayPlaybackImage(cached, animated: animated)
+            displayPlaybackImage(cached, animated: animated) { [weak self] in
+                self?.finishSMBApplyIfNeeded(for: remoteURL, applyID: smbApplyIDForPhoto)
+            }
             removeCachedImage(for: remoteURL)
             prefetchUpcomingPhotos(after: index)
             return
@@ -717,11 +816,15 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
             guard let self = self else { return }
             guard self.currentImageRequestID == requestID else { return }
             guard let image = image else {
-                self.displayPlaybackImage(FramePhoto.placeholder(title: "Photo unavailable", subtitle: photo.title), animated: true)
+                self.displayPlaybackImage(FramePhoto.placeholder(title: "Photo unavailable", subtitle: photo.title), animated: true) { [weak self] in
+                    self?.finishSMBApplyIfNeeded(for: remoteURL, applyID: smbApplyIDForPhoto)
+                }
                 return
             }
 
-            self.displayPlaybackImage(image, animated: true)
+            self.displayPlaybackImage(image, animated: true) { [weak self] in
+                self?.finishSMBApplyIfNeeded(for: remoteURL, applyID: smbApplyIDForPhoto)
+            }
             self.removeCachedImage(for: remoteURL)
             self.prefetchUpcomingPhotos(after: index)
         }
@@ -1034,10 +1137,12 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
         randomIndexQueue = indices
     }
 
-    private func displayPlaybackImage(_ image: UIImage, animated: Bool) {
+    private func displayPlaybackImage(_ image: UIImage, animated: Bool, completion: (() -> Void)? = nil) {
         display(image: image, animated: animated) { [weak self] in
-            self?.currentPhotoReadyForTiming = true
-            self?.scheduleNextPhotoTimer()
+            guard let self = self else { return }
+            self.currentPhotoReadyForTiming = true
+            self.scheduleNextPhotoTimer()
+            completion?()
         }
     }
 
@@ -1298,6 +1403,7 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
 
     @objc private func connectSMB() {
         view.endEditing(true)
+        guard !isApplyingSMBFolder else { return }
         cancelRemoteImageLoads()
         clearImageCache()
         disconnectSMB()
@@ -1310,11 +1416,11 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
         saveSourcePreference(.smb)
         statusLabel.text = "Connecting SMB..."
         smbConnectButton.isEnabled = false
+        smbApplyButton.isEnabled = false
 
         smbLoader.connect(to: url, username: username, password: password) { [weak self] result in
             DispatchQueue.main.async {
                 guard let self = self else { return }
-                self.smbConnectButton.isEnabled = true
                 switch result {
                 case .success(let connection):
                     self.sourceType = .smb
@@ -1329,6 +1435,7 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
                     }
                     self.statusLabel.text = "Connected SMB. Select a folder, then apply it for playback."
                     self.updatePlaybackSummary()
+                    self.updateSMBActionButtons()
                 case .failure(let error):
                     self.smbCurrentDirectory = nil
                     self.smbDirectoryStack.removeAll()
@@ -1336,12 +1443,14 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
                     self.updateSMBPathLabel()
                     self.updateSettingsLayout()
                     self.statusLabel.text = error.localizedDescription
+                    self.updateSMBActionButtons()
                 }
             }
         }
     }
 
     @objc private func backSMBDirectory() {
+        guard !isApplyingSMBFolder else { return }
         guard smbDirectoryStack.count > 1 else { return }
         smbDirectoryStack.removeLast()
         smbCurrentDirectory = smbDirectoryStack.last
@@ -1350,19 +1459,31 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
     }
 
     @objc private func applySelectedSMBFolder() {
+        guard !isApplyingSMBFolder else { return }
         guard let connection = smbConnection,
               let directory = smbCurrentDirectory else {
             statusLabel.text = "Connect SMB and select a folder first."
             return
         }
+        let applyID = UUID()
+        activeSMBApplyID = applyID
+        isApplyingSMBFolder = true
+        updateSMBActionButtons()
+        startSMBApplyTimeout(for: applyID)
+        cancelRemoteImageLoads()
+        clearImageCache()
         statusLabel.text = "Loading SMB photos..."
         smbLoader.loadPhotos(in: directory, connection: connection) { [weak self] result in
             DispatchQueue.main.async {
                 guard let self = self else { return }
+                guard self.activeSMBApplyID == applyID else { return }
                 switch result {
                 case .success(let photos):
+                    self.pendingSMBApplyID = applyID
+                    self.pendingSMBApplyFirstURL = photos.first?.remoteURL
                     self.applyPhotos(photos, source: .smb, status: "Loaded \(photos.count) SMB photo(s) from \(directory.name).")
                 case .failure(let error):
+                    self.finishSMBApply()
                     self.statusLabel.text = error.localizedDescription
                 }
             }
@@ -1370,6 +1491,10 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
     }
 
     private func disconnectSMB() {
+        activeSMBApplyID = UUID()
+        pendingSMBApplyID = nil
+        pendingSMBApplyFirstURL = nil
+        finishSMBApply()
         if let connection = smbConnection {
             smbLoader.disconnect(connection)
         }
@@ -1378,17 +1503,54 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
         smbDirectoryStack.removeAll()
         smbDirectoryTableView.reloadData()
         updateSMBPathLabel()
+        updateSMBActionButtons()
     }
 
     private func updateSMBPathLabel() {
         guard isViewLoaded else { return }
         if let directory = smbCurrentDirectory {
             smbPathLabel.text = directory.displayPath
-            smbApplyButton.isEnabled = true
         } else {
             smbPathLabel.text = "Not connected."
-            smbApplyButton.isEnabled = false
         }
+        updateSMBActionButtons()
+    }
+
+    private func updateSMBActionButtons() {
+        guard isViewLoaded else { return }
+        smbConnectButton.isEnabled = !isApplyingSMBFolder
+        smbBackButton.isEnabled = smbDirectoryStack.count > 1 && !isApplyingSMBFolder
+        smbApplyButton.isEnabled = smbCurrentDirectory != nil && !isApplyingSMBFolder
+        smbDirectoryTableView.allowsSelection = !isApplyingSMBFolder
+    }
+
+    private func startSMBApplyTimeout(for applyID: UUID) {
+        smbApplyTimeoutTimer?.invalidate()
+        smbApplyTimeoutTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: false) { [weak self] _ in
+            guard let self = self else { return }
+            guard self.isApplyingSMBFolder, self.activeSMBApplyID == applyID else { return }
+            self.activeSMBApplyID = UUID()
+            self.cancelRemoteImageLoads()
+            self.finishSMBApply()
+            self.statusLabel.text = "SMB loading timed out. Please try Load again."
+        }
+    }
+
+    private func finishSMBApply() {
+        smbApplyTimeoutTimer?.invalidate()
+        smbApplyTimeoutTimer = nil
+        pendingSMBApplyID = nil
+        pendingSMBApplyFirstURL = nil
+        isApplyingSMBFolder = false
+        updateSMBActionButtons()
+    }
+
+    private func finishSMBApplyIfNeeded(for url: URL, applyID: UUID?) {
+        guard isApplyingSMBFolder,
+              let applyID = applyID,
+              pendingSMBApplyID == applyID,
+              pendingSMBApplyFirstURL == url else { return }
+        finishSMBApply()
     }
 
     @objc private func transitionChanged() {
@@ -1442,14 +1604,15 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
             cell.detailTextLabel?.text = nil
             cell.accessoryType = .none
         }
-        cell.backgroundColor = .clear
-        cell.textLabel?.textColor = .white
-        cell.detailTextLabel?.textColor = UIColor(white: 0.75, alpha: 1)
+        cell.backgroundColor = .white
+        cell.textLabel?.textColor = settingsPrimaryText
+        cell.detailTextLabel?.textColor = settingsSecondaryText
         return cell
     }
 
     func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
         tableView.deselectRow(at: indexPath, animated: true)
+        guard !isApplyingSMBFolder else { return }
         guard tableView == smbDirectoryTableView,
               let child = smbCurrentDirectory?.children[indexPath.row] else {
             return
@@ -1578,6 +1741,7 @@ private enum SMBError: LocalizedError {
 
 private final class SMBPhotoLoader {
     private let supportedExtensions = Set(["jpg", "jpeg", "png", "heic", "heif", "webp", "bmp"])
+    private let queue = DispatchQueue(label: "com.revivalframe.smb")
 
     func connect(to rawURL: String, username: String, password: String, completion: @escaping (Result<SMBConnection, Error>) -> Void) {
         do {
@@ -1587,7 +1751,7 @@ private final class SMBPhotoLoader {
             return
         }
 
-        DispatchQueue.global(qos: .userInitiated).async {
+        queue.async {
             do {
                 let client = try SMB2ClientWrapper(urlString: rawURL, username: username, password: password)
                 let root = try self.loadDirectorySync(path: client.rootPath, displayPath: client.displayName, client: client)
@@ -1599,11 +1763,13 @@ private final class SMBPhotoLoader {
     }
 
     func disconnect(_ connection: SMBConnection) {
-        connection.client.disconnect()
+        queue.async {
+            connection.client.disconnect()
+        }
     }
 
     func loadDirectory(path: String, displayPath: String, connection: SMBConnection, completion: @escaping (Result<SMBDirectory, Error>) -> Void) {
-        DispatchQueue.global(qos: .userInitiated).async {
+        queue.async {
             do {
                 completion(.success(try self.loadDirectorySync(path: path, displayPath: displayPath, client: connection.client)))
             } catch {
@@ -1613,7 +1779,7 @@ private final class SMBPhotoLoader {
     }
 
     func loadPhotos(in directory: SMBDirectory, connection: SMBConnection, completion: @escaping (Result<[FramePhoto], Error>) -> Void) {
-        DispatchQueue.global(qos: .userInitiated).async {
+        queue.async {
             do {
                 let photos = try self.photoURLsRecursively(in: directory, client: connection.client)
                     .map { FramePhoto(title: $0.lastPathComponent, image: nil, remoteURL: $0) }
@@ -1629,7 +1795,7 @@ private final class SMBPhotoLoader {
     }
 
     func downloadFile(at path: String, connection: SMBConnection, destination: URL, completion: @escaping (Result<URL, Error>) -> Void) {
-        DispatchQueue.global(qos: .userInitiated).async {
+        queue.async {
             do {
                 try connection.client.downloadFile(atPath: path, toLocalPath: destination.path)
                 completion(.success(destination))
