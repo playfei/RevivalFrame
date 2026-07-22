@@ -47,7 +47,7 @@ private enum PlaybackOrder: Int {
     }
 }
 
-final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecognizerDelegate, UITableViewDataSource, UITableViewDelegate {
+final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecognizerDelegate, UITableViewDataSource, UITableViewDelegate, URLSessionDownloadDelegate {
     private let imageView = UIImageView()
     private let topPanel = UIVisualEffectView(effect: UIBlurEffect(style: .dark))
     private let titleLabel = UILabel()
@@ -74,6 +74,7 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
     private let orderControl = UISegmentedControl(items: [PlaybackOrder.sequential.title, PlaybackOrder.random.title])
     private let cacheSizeControl = UISegmentedControl(items: ["100 MB", "300 MB", "500 MB"])
     private let cacheStatusLabel = UILabel()
+    private let downloadRateLabel = UILabel()
     private let imageCache = NSCache<NSURL, UIImage>()
     private let immichClient = ImmichShareClient()
 
@@ -93,12 +94,18 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
     private var cacheSizeMB = 300
     private var currentImageRequestID = UUID()
     private var currentPhotoReadyForTiming = false
-    private var remoteImageTasks: [URL: URLSessionDataTask] = [:]
+    private var remoteImageTasks: [URL: URLSessionTask] = [:]
     private var remoteImageCompletions: [URL: [(UIImage?) -> Void]] = [:]
     private var remoteImageNeedsDecode: [URL: Bool] = [:]
+    private var remoteTaskURLs: [Int: URL] = [:]
     private var cachedFileCosts: [URL: Int] = [:]
     private var cachedFileURLs: [URL: URL] = [:]
     private var deferredPrefetchURLs = Set<URL>()
+    private var activeDownloadBytes: [URL: Int64] = [:]
+    private var activeDownloadStartTimes: [URL: TimeInterval] = [:]
+    private var lastDownloadRateBytesPerSecond: Double = 0
+    private var lastDownloadRateUpdate: TimeInterval = 0
+    private var downloadRateTimer: Timer?
     private var randomIndexQueue: [Int] = []
     private var kenBurnsDirection = CGPoint(x: 1, y: 1)
     private var smbConnection: SMBConnection?
@@ -114,6 +121,20 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
     private var settingsPanelWidthConstraint: NSLayoutConstraint?
     private var settingsContentHeightConstraint: NSLayoutConstraint?
     private var smbDirectoryHeightConstraint: NSLayoutConstraint?
+    private var immichTextViewHeightConstraint: NSLayoutConstraint?
+    private var intervalValueWidthConstraint: NSLayoutConstraint?
+    private var smbURLFieldHeightConstraint: NSLayoutConstraint?
+    private var smbUsernameFieldHeightConstraint: NSLayoutConstraint?
+    private var smbPasswordFieldHeightConstraint: NSLayoutConstraint?
+    private var smbConnectButtonHeightConstraint: NSLayoutConstraint?
+    private var smbBackButtonHeightConstraint: NSLayoutConstraint?
+    private var smbApplyButtonHeightConstraint: NSLayoutConstraint?
+
+    private lazy var remoteDownloadSession: URLSession = {
+        let configuration = URLSessionConfiguration.default
+        configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
+        return URLSession(configuration: configuration, delegate: self, delegateQueue: OperationQueue.main)
+    }()
 
     private var settingsGroupedBackground: UIColor {
         return UIColor(red: 0.94, green: 0.94, blue: 0.96, alpha: 1)
@@ -157,19 +178,25 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
 
     override func viewDidLoad() {
         super.viewDidLoad()
+        NSLog("RevivalFrame startup: ViewController viewDidLoad begin")
         loadPreferences()
         configureImageCache()
         clearImageCache()
         buildInterface()
+        NSLog("RevivalFrame startup: interface built")
         showPhoto(at: 0, animated: false)
+        NSLog("RevivalFrame startup: first photo requested")
         updatePlaybackSummary()
         restoreLastSourceIfNeeded()
+        NSLog("RevivalFrame startup: ViewController viewDidLoad end")
     }
 
     override func viewDidDisappear(_ animated: Bool) {
         super.viewDidDisappear(animated)
         timer?.invalidate()
         smbApplyTimeoutTimer?.invalidate()
+        downloadRateTimer?.invalidate()
+        downloadRateTimer = nil
     }
 
     override func viewDidLayoutSubviews() {
@@ -468,8 +495,17 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
         field.placeholder = placeholder
         field.autocorrectionType = .no
         field.autocapitalizationType = .none
+        field.spellCheckingType = .no
+        field.smartQuotesType = .no
+        field.smartDashesType = .no
+        field.textContentType = nil
         field.clearButtonMode = .whileEditing
         field.isSecureTextEntry = secure
+        if secure {
+            field.keyboardType = .asciiCapable
+            field.textContentType = .oneTimeCode
+            field.passwordRules = nil
+        }
     }
 
     private func replaceSettingsContent(with content: UIView, fillVertically: Bool = false) {
@@ -492,7 +528,7 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
         let stack = UIStackView(arrangedSubviews: [
             makeSettingsTitleLabel("Default source"),
             makeSettingsGroup([
-                makeSettingsLabel("Four generated landscape photos are available offline and are useful for checking playback, transitions, and full-screen framing."),
+                makeSettingsLabel("Four warm sample photos are available offline and are useful for checking playback, transitions, and full-screen framing."),
                 useButton
             ])
         ])
@@ -526,7 +562,10 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
         ])
         stack.axis = .vertical
         stack.spacing = 8
-        immichTextView.heightAnchor.constraint(equalToConstant: 96).isActive = true
+        if immichTextViewHeightConstraint == nil {
+            immichTextViewHeightConstraint = immichTextView.heightAnchor.constraint(equalToConstant: 96)
+            immichTextViewHeightConstraint?.isActive = true
+        }
         replaceSettingsContent(with: stack)
     }
 
@@ -568,9 +607,14 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
         buttonRow.spacing = 8
         buttonRow.alignment = .center
         buttonRow.distribution = .fillEqually
-        smbConnectButton.heightAnchor.constraint(equalToConstant: 34).isActive = true
-        smbBackButton.heightAnchor.constraint(equalToConstant: 34).isActive = true
-        smbApplyButton.heightAnchor.constraint(equalToConstant: 34).isActive = true
+        if smbConnectButtonHeightConstraint == nil {
+            smbConnectButtonHeightConstraint = smbConnectButton.heightAnchor.constraint(equalToConstant: 34)
+            smbBackButtonHeightConstraint = smbBackButton.heightAnchor.constraint(equalToConstant: 34)
+            smbApplyButtonHeightConstraint = smbApplyButton.heightAnchor.constraint(equalToConstant: 34)
+            smbConnectButtonHeightConstraint?.isActive = true
+            smbBackButtonHeightConstraint?.isActive = true
+            smbApplyButtonHeightConstraint?.isActive = true
+        }
 
         let formGroup = makeSettingsGroup([
             makeSettingsLabel("SMB URL"),
@@ -602,9 +646,14 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
         }
         stack.translatesAutoresizingMaskIntoConstraints = false
 
-        smbURLField.heightAnchor.constraint(equalToConstant: 36).isActive = true
-        smbUsernameField.heightAnchor.constraint(equalToConstant: 36).isActive = true
-        smbPasswordField.heightAnchor.constraint(equalToConstant: 36).isActive = true
+        if smbURLFieldHeightConstraint == nil {
+            smbURLFieldHeightConstraint = smbURLField.heightAnchor.constraint(equalToConstant: 36)
+            smbUsernameFieldHeightConstraint = smbUsernameField.heightAnchor.constraint(equalToConstant: 36)
+            smbPasswordFieldHeightConstraint = smbPasswordField.heightAnchor.constraint(equalToConstant: 36)
+            smbURLFieldHeightConstraint?.isActive = true
+            smbUsernameFieldHeightConstraint?.isActive = true
+            smbPasswordFieldHeightConstraint?.isActive = true
+        }
         smbDirectoryHeightConstraint?.isActive = false
         smbDirectoryHeightConstraint = smbDirectoryTableView.heightAnchor.constraint(equalToConstant: connected ? (landscape ? 280 : 260) : 80)
         smbDirectoryHeightConstraint?.isActive = true
@@ -651,7 +700,10 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
         intervalRow.axis = .horizontal
         intervalRow.alignment = .center
         intervalRow.spacing = 10
-        intervalValueLabel.widthAnchor.constraint(equalToConstant: 44).isActive = true
+        if intervalValueWidthConstraint == nil {
+            intervalValueWidthConstraint = intervalValueLabel.widthAnchor.constraint(equalToConstant: 44)
+            intervalValueWidthConstraint?.isActive = true
+        }
 
         cacheSizeControl.selectedSegmentIndex = cacheSizeOptionsMB.firstIndex(of: cacheSizeMB) ?? 1
         cacheSizeControl.removeTarget(nil, action: nil, for: .valueChanged)
@@ -664,6 +716,11 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
         cacheStatusLabel.numberOfLines = 2
         updateCacheStatus()
 
+        downloadRateLabel.font = UIFont.monospacedDigitSystemFont(ofSize: 12, weight: .regular)
+        downloadRateLabel.textColor = settingsSecondaryText
+        downloadRateLabel.numberOfLines = 1
+        updateDownloadRateLabel()
+
         let stack = UIStackView(arrangedSubviews: [
             makeSettingsTitleLabel("Playback"),
             makeSettingsGroup([
@@ -675,7 +732,8 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
                 intervalRow,
                 makeSettingsLabel("Cache size"),
                 cacheSizeControl,
-                cacheStatusLabel
+                cacheStatusLabel,
+                downloadRateLabel
             ])
         ])
         stack.axis = .vertical
@@ -793,6 +851,12 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
             return
         }
 
+        if let imageName = photo.imageName, let image = UIImage(named: imageName) {
+            displayPlaybackImage(image, animated: animated)
+            prefetchUpcomingPhotos(after: index)
+            return
+        }
+
         guard let remoteURL = photo.remoteURL else {
             displayPlaybackImage(FramePhoto.placeholder(title: "Photo unavailable", subtitle: photo.title), animated: animated)
             prefetchUpcomingPhotos(after: index)
@@ -869,56 +933,81 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
 
         remoteImageCompletions[url] = [completion]
         remoteImageNeedsDecode[url] = shouldDecode
-        let task = URLSession.shared.dataTask(with: url) { [weak self] data, response, _ in
-            guard let self = self else { return }
-            var cost = 1
-            var storedFileURL: URL?
-            if let data = data,
-               let http = response as? HTTPURLResponse,
-               (200..<300).contains(http.statusCode) {
-                cost = max(1, data.count)
-                let fileURL = self.temporaryCacheFileURL(for: url)
-                do {
-                    try data.write(to: fileURL, options: .atomic)
-                    storedFileURL = fileURL
-                } catch {
-                    storedFileURL = nil
-                }
-            }
-
-            DispatchQueue.main.async {
-                let loadedImage: UIImage? = nil
-                if let fileURL = storedFileURL {
-                    self.storeCachedFile(at: fileURL, for: url, cost: cost)
-                    if self.remoteImageNeedsDecode[url] == true {
-                        DispatchQueue.global(qos: .userInitiated).async {
-                            let image = self.downsampledImage(at: fileURL)
-                            DispatchQueue.main.async {
-                                if let image = image {
-                                    self.imageCache.setObject(image, forKey: url as NSURL)
-                                }
-                                let completions = self.remoteImageCompletions.removeValue(forKey: url) ?? []
-                                self.remoteImageNeedsDecode.removeValue(forKey: url)
-                                self.remoteImageTasks.removeValue(forKey: url)
-                                self.updateCacheStatus()
-                                completions.forEach { $0(image) }
-                                self.prefetchUpcomingPhotos(after: self.currentIndex)
-                            }
-                        }
-                        return
-                    }
-                }
-                let completions = self.remoteImageCompletions.removeValue(forKey: url) ?? []
-                self.remoteImageNeedsDecode.removeValue(forKey: url)
-                self.remoteImageTasks.removeValue(forKey: url)
-                self.updateCacheStatus()
-                completions.forEach { $0(loadedImage) }
-                self.prefetchUpcomingPhotos(after: self.currentIndex)
-            }
-        }
+        beginDownloadTracking(for: url)
+        let task = remoteDownloadSession.downloadTask(with: url)
+        remoteTaskURLs[task.taskIdentifier] = url
         remoteImageTasks[url] = task
         task.resume()
         updateCacheStatus()
+    }
+
+    func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didWriteData bytesWritten: Int64, totalBytesWritten: Int64, totalBytesExpectedToWrite: Int64) {
+        guard let url = remoteTaskURLs[downloadTask.taskIdentifier] else { return }
+        recordDownloadProgress(for: url, totalBytesWritten: totalBytesWritten)
+    }
+
+    func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didFinishDownloadingTo location: URL) {
+        guard let url = remoteTaskURLs[downloadTask.taskIdentifier] else { return }
+        var storedFileURL: URL?
+        var cost = 1
+        if let http = downloadTask.response as? HTTPURLResponse,
+           (200..<300).contains(http.statusCode) {
+            let fileURL = temporaryCacheFileURL(for: url)
+            do {
+                try? FileManager.default.removeItem(at: fileURL)
+                try FileManager.default.moveItem(at: location, to: fileURL)
+                cost = max(1, ((try? FileManager.default.attributesOfItem(atPath: fileURL.path)[.size] as? NSNumber)?.intValue) ?? 1)
+                storedFileURL = fileURL
+            } catch {
+                NSLog("RevivalFrame HTTP cache move failed for %@: %@", url.absoluteString, error.localizedDescription)
+                storedFileURL = nil
+            }
+        }
+        finishRemoteDownload(for: url, taskIdentifier: downloadTask.taskIdentifier, storedFileURL: storedFileURL, cost: cost)
+    }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        if error != nil {
+            guard let url = remoteTaskURLs[task.taskIdentifier] else { return }
+            finishRemoteDownload(for: url, taskIdentifier: task.taskIdentifier, storedFileURL: nil, cost: 1)
+        }
+    }
+
+    private func finishRemoteDownload(for url: URL, taskIdentifier: Int, storedFileURL: URL?, cost: Int) {
+        remoteTaskURLs.removeValue(forKey: taskIdentifier)
+        finishDownloadTracking(for: url, finalBytes: cost)
+
+        let loadedImage: UIImage? = nil
+        if let fileURL = storedFileURL {
+            if remoteImageNeedsDecode[url] == true {
+                DispatchQueue.global(qos: .userInitiated).async {
+                    let image = self.downsampledImage(at: fileURL)
+                    DispatchQueue.main.async {
+                        self.storeCachedFile(at: fileURL, for: url, cost: cost)
+                        if let image = image {
+                            self.imageCache.setObject(image, forKey: url as NSURL)
+                        } else {
+                            self.statusLabel.text = "Unable to decode photo: \(url.lastPathComponent)"
+                            NSLog("RevivalFrame HTTP decode failed for %@", url.absoluteString)
+                        }
+                        let completions = self.remoteImageCompletions.removeValue(forKey: url) ?? []
+                        self.remoteImageNeedsDecode.removeValue(forKey: url)
+                        self.remoteImageTasks.removeValue(forKey: url)
+                        self.updateCacheStatus()
+                        completions.forEach { $0(image) }
+                        self.prefetchUpcomingPhotos(after: self.currentIndex)
+                    }
+                }
+                return
+            }
+        }
+
+        let completions = remoteImageCompletions.removeValue(forKey: url) ?? []
+        remoteImageNeedsDecode.removeValue(forKey: url)
+        remoteImageTasks.removeValue(forKey: url)
+        updateCacheStatus()
+        completions.forEach { $0(loadedImage) }
+        prefetchUpcomingPhotos(after: currentIndex)
     }
 
     private func loadSMBImage(_ url: URL, shouldDecode: Bool, completion: @escaping (UIImage?) -> Void) {
@@ -937,23 +1026,25 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
         remoteImageNeedsDecode[url] = shouldDecode
         let requestedFileURL = temporaryCacheFileURL(for: url)
         let smbPath = url.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        beginDownloadTracking(for: url)
         smbLoader.downloadFile(at: smbPath, connection: connection, destination: requestedFileURL) { [weak self] result in
             DispatchQueue.main.async {
                 guard let self = self else { return }
                 switch result {
                 case .success(let downloadedFileURL):
                     let cost = max(1, ((try? FileManager.default.attributesOfItem(atPath: downloadedFileURL.path)[.size] as? NSNumber)?.intValue) ?? 1)
+                    self.finishDownloadTracking(for: url, finalBytes: cost)
                     if self.remoteImageNeedsDecode[url] == true {
                         DispatchQueue.global(qos: .userInitiated).async {
                             let image = self.downsampledImage(at: downloadedFileURL)
                             DispatchQueue.main.async {
-                                self.storeCachedFile(at: downloadedFileURL, for: url, cost: cost)
                                 if let image = image {
                                     self.imageCache.setObject(image, forKey: url as NSURL)
                                 } else {
                                     self.statusLabel.text = "Unable to decode SMB photo: \(url.lastPathComponent)"
                                     NSLog("RevivalFrame SMB decode failed for %@", url.path)
                                 }
+                                self.storeCachedFile(at: downloadedFileURL, for: url, cost: cost)
                                 let completions = self.remoteImageCompletions.removeValue(forKey: url) ?? []
                                 self.remoteImageNeedsDecode.removeValue(forKey: url)
                                 self.updateCacheStatus()
@@ -970,6 +1061,7 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
                     completions.forEach { $0(nil) }
                     self.prefetchUpcomingPhotos(after: self.currentIndex)
                 case .failure(let error):
+                    self.finishDownloadTracking(for: url, finalBytes: 0)
                     self.statusLabel.text = "Unable to load SMB photo: \(url.lastPathComponent)"
                     NSLog("RevivalFrame SMB download failed for %@: %@", url.path, error.localizedDescription)
                     let completions = self.remoteImageCompletions.removeValue(forKey: url) ?? []
@@ -1029,12 +1121,84 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
         remoteImageTasks.removeAll()
         remoteImageCompletions.removeAll()
         remoteImageNeedsDecode.removeAll()
+        remoteTaskURLs.removeAll()
+        activeDownloadBytes.removeAll()
+        activeDownloadStartTimes.removeAll()
+        lastDownloadRateBytesPerSecond = 0
+        lastDownloadRateUpdate = 0
+        stopDownloadRateTimerIfIdle()
         updateCacheStatus()
+        updateDownloadRateLabel()
     }
 
     private func updateCacheStatus() {
         guard isViewLoaded else { return }
         cacheStatusLabel.text = "Temp cache \(formatBytes(cachedImageBytes)) / \(cacheSizeMB) MB. Active downloads: \(remoteImageCompletions.count). Played files are deleted immediately."
+        updateDownloadRateLabel()
+    }
+
+    private func beginDownloadTracking(for url: URL) {
+        activeDownloadBytes[url] = 0
+        activeDownloadStartTimes[url] = CFAbsoluteTimeGetCurrent()
+        startDownloadRateTimerIfNeeded()
+        updateDownloadRateLabel()
+    }
+
+    private func recordDownloadProgress(for url: URL, totalBytesWritten: Int64) {
+        activeDownloadBytes[url] = max(0, totalBytesWritten)
+        updateCurrentDownloadRate()
+        updateDownloadRateLabel()
+    }
+
+    private func finishDownloadTracking(for url: URL, finalBytes: Int) {
+        if let start = activeDownloadStartTimes[url] {
+            let elapsed = max(0.1, CFAbsoluteTimeGetCurrent() - start)
+            lastDownloadRateBytesPerSecond = Double(max(0, finalBytes)) / elapsed
+            lastDownloadRateUpdate = CFAbsoluteTimeGetCurrent()
+        }
+        activeDownloadBytes.removeValue(forKey: url)
+        activeDownloadStartTimes.removeValue(forKey: url)
+        stopDownloadRateTimerIfIdle()
+        updateDownloadRateLabel()
+    }
+
+    private func updateCurrentDownloadRate() {
+        let now = CFAbsoluteTimeGetCurrent()
+        var totalRate = 0.0
+        for (url, bytes) in activeDownloadBytes {
+            guard let start = activeDownloadStartTimes[url] else { continue }
+            let elapsed = max(0.1, now - start)
+            totalRate += Double(bytes) / elapsed
+        }
+        if totalRate > 0 {
+            lastDownloadRateBytesPerSecond = totalRate
+            lastDownloadRateUpdate = now
+        }
+    }
+
+    private func updateDownloadRateLabel() {
+        guard isViewLoaded else { return }
+        updateCurrentDownloadRate()
+        if !activeDownloadBytes.isEmpty {
+            downloadRateLabel.text = "Download rate \(formatRate(lastDownloadRateBytesPerSecond)) now."
+        } else if lastDownloadRateUpdate > 0, CFAbsoluteTimeGetCurrent() - lastDownloadRateUpdate < 10 {
+            downloadRateLabel.text = "Download rate \(formatRate(lastDownloadRateBytesPerSecond)) last."
+        } else {
+            downloadRateLabel.text = "Download rate idle."
+        }
+    }
+
+    private func startDownloadRateTimerIfNeeded() {
+        guard downloadRateTimer == nil else { return }
+        downloadRateTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+            self?.updateDownloadRateLabel()
+        }
+    }
+
+    private func stopDownloadRateTimerIfIdle() {
+        guard activeDownloadBytes.isEmpty else { return }
+        downloadRateTimer?.invalidate()
+        downloadRateTimer = nil
     }
 
     private var cacheLimitBytes: Int {
@@ -1118,6 +1282,16 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
     private func formatBytes(_ bytes: Int) -> String {
         let mb = Double(bytes) / 1024.0 / 1024.0
         return String(format: "%.1f MB", mb)
+    }
+
+    private func formatRate(_ bytesPerSecond: Double) -> String {
+        if bytesPerSecond >= 1024 * 1024 {
+            return String(format: "%.1f MB/s", bytesPerSecond / 1024.0 / 1024.0)
+        }
+        if bytesPerSecond >= 1024 {
+            return String(format: "%.0f KB/s", bytesPerSecond / 1024.0)
+        }
+        return String(format: "%.0f B/s", bytesPerSecond)
     }
 
     private func resetRandomQueue() {
@@ -1641,13 +1815,21 @@ private struct FramePhoto {
     let title: String
     let image: UIImage?
     let remoteURL: URL?
+    let imageName: String?
+
+    init(title: String, image: UIImage?, remoteURL: URL?, imageName: String? = nil) {
+        self.title = title
+        self.image = image
+        self.remoteURL = remoteURL
+        self.imageName = imageName
+    }
 
     static func presets() -> [FramePhoto] {
         return [
-            FramePhoto(title: "Pacific Coast", image: landscape(title: "Pacific Coast", top: color(12, 45, 84), middle: color(44, 128, 178), bottom: color(240, 156, 92), sun: color(255, 199, 89)), remoteURL: nil),
-            FramePhoto(title: "Alpine Morning", image: landscape(title: "Alpine Morning", top: color(122, 178, 224), middle: color(199, 224, 235), bottom: color(143, 178, 140), sun: color(255, 235, 158)), remoteURL: nil),
-            FramePhoto(title: "Desert Light", image: landscape(title: "Desert Light", top: color(56, 56, 102), middle: color(204, 110, 97), bottom: color(240, 184, 117), sun: color(255, 179, 97)), remoteURL: nil),
-            FramePhoto(title: "Forest Lake", image: landscape(title: "Forest Lake", top: color(15, 46, 46), middle: color(41, 107, 107), bottom: color(26, 82, 71), sun: color(217, 245, 209)), remoteURL: nil)
+            FramePhoto(title: "Lake Memory", image: nil, remoteURL: nil, imageName: "PresetLakeDock"),
+            FramePhoto(title: "Lakeshore Walk", image: nil, remoteURL: nil, imageName: "PresetLakeshoreWalk"),
+            FramePhoto(title: "Golden Pier", image: nil, remoteURL: nil, imageName: "PresetGoldenPier"),
+            FramePhoto(title: "Home Frame", image: nil, remoteURL: nil, imageName: "PresetHomeFrame")
         ]
     }
 
