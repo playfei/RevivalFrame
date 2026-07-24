@@ -55,11 +55,13 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
     private let bottomPanel = UIVisualEffectView(effect: UIBlurEffect(style: .dark))
     private let playPauseButton = UIButton(type: .system)
     private let summaryLabel = UILabel()
+    private let deferredLoadingLabel = UILabel()
     private let settingsPanel = UIVisualEffectView(effect: UIBlurEffect(style: .extraLight))
     private let settingsTabs = UISegmentedControl(items: ["Presets", "Immich", "SMB", "Playback"])
     private let settingsContent = UIView()
     private let statusLabel = UILabel()
     private let immichTextView = UITextView()
+    private let immichPasswordField = UITextField()
     private let smbURLField = UITextField()
     private let smbUsernameField = UITextField()
     private let smbPasswordField = UITextField()
@@ -79,10 +81,12 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
     private let immichClient = ImmichShareClient()
 
     private let cacheSizeOptionsMB = [100, 300, 500]
-    private let maxConcurrentRemoteLoads = 1
+    private let maxConcurrentRemoteLoads = 2
+    private let prefetchWindowCount = 4
     private let smbLoader = SMBPhotoLoader()
     private var photos: [FramePhoto] = FramePhoto.presets()
     private var currentIndex = 0
+    private var requestedIndex = 0
     private var isPlaying = true
     private var timer: Timer?
     private var panelsVisible = true
@@ -94,6 +98,7 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
     private var cacheSizeMB = 300
     private var currentImageRequestID = UUID()
     private var currentPhotoReadyForTiming = false
+    private var waitingForPreparedPhoto = false
     private var remoteImageTasks: [URL: URLSessionTask] = [:]
     private var remoteImageCompletions: [URL: [(UIImage?) -> Void]] = [:]
     private var remoteImageNeedsDecode: [URL: Bool] = [:]
@@ -106,7 +111,10 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
     private var lastDownloadRateBytesPerSecond: Double = 0
     private var lastDownloadRateUpdate: TimeInterval = 0
     private var downloadRateTimer: Timer?
+    private var deferredLoadingTimer: Timer?
+    private var deferredLoadingStep = 0
     private var randomIndexQueue: [Int] = []
+    private var randomPlaybackHistory: [Int] = []
     private var kenBurnsDirection = CGPoint(x: 1, y: 1)
     private var smbConnection: SMBConnection?
     private var smbCurrentDirectory: SMBDirectory?
@@ -122,6 +130,7 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
     private var settingsContentHeightConstraint: NSLayoutConstraint?
     private var smbDirectoryHeightConstraint: NSLayoutConstraint?
     private var immichTextViewHeightConstraint: NSLayoutConstraint?
+    private var immichPasswordFieldHeightConstraint: NSLayoutConstraint?
     private var intervalValueWidthConstraint: NSLayoutConstraint?
     private var smbURLFieldHeightConstraint: NSLayoutConstraint?
     private var smbUsernameFieldHeightConstraint: NSLayoutConstraint?
@@ -197,6 +206,7 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
         smbApplyTimeoutTimer?.invalidate()
         downloadRateTimer?.invalidate()
         downloadRateTimer = nil
+        stopDeferredLoadingIndicator()
     }
 
     override func viewDidLayoutSubviews() {
@@ -228,10 +238,31 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
         let tap = UITapGestureRecognizer(target: self, action: #selector(togglePanels))
         tap.cancelsTouchesInView = false
         tap.delegate = self
+
+        let doubleTap = UITapGestureRecognizer(target: self, action: #selector(handleDoubleTap))
+        doubleTap.numberOfTapsRequired = 2
+        doubleTap.cancelsTouchesInView = false
+        doubleTap.delegate = self
+        tap.require(toFail: doubleTap)
+
+        let leftSwipe = UISwipeGestureRecognizer(target: self, action: #selector(handleSwipe(_:)))
+        leftSwipe.direction = .left
+        leftSwipe.cancelsTouchesInView = false
+        leftSwipe.delegate = self
+
+        let rightSwipe = UISwipeGestureRecognizer(target: self, action: #selector(handleSwipe(_:)))
+        rightSwipe.direction = .right
+        rightSwipe.cancelsTouchesInView = false
+        rightSwipe.delegate = self
+
         view.addGestureRecognizer(tap)
+        view.addGestureRecognizer(doubleTap)
+        view.addGestureRecognizer(leftSwipe)
+        view.addGestureRecognizer(rightSwipe)
 
         buildTopPanel()
         buildBottomPanel()
+        buildDeferredLoadingLabel()
         buildSettingsPanel()
 
         NSLayoutConstraint.activate([
@@ -239,6 +270,23 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
             imageView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             imageView.topAnchor.constraint(equalTo: view.topAnchor),
             imageView.bottomAnchor.constraint(equalTo: view.bottomAnchor)
+        ])
+    }
+
+    private func buildDeferredLoadingLabel() {
+        deferredLoadingLabel.translatesAutoresizingMaskIntoConstraints = false
+        deferredLoadingLabel.font = UIFont.systemFont(ofSize: 15, weight: .medium)
+        deferredLoadingLabel.textColor = UIColor(white: 1, alpha: 0.76)
+        deferredLoadingLabel.shadowColor = UIColor(white: 0, alpha: 0.65)
+        deferredLoadingLabel.shadowOffset = CGSize(width: 0, height: 1)
+        deferredLoadingLabel.text = "Loading..."
+        deferredLoadingLabel.alpha = 0
+        deferredLoadingLabel.isHidden = true
+        view.addSubview(deferredLoadingLabel)
+
+        NSLayoutConstraint.activate([
+            deferredLoadingLabel.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor, constant: 18),
+            deferredLoadingLabel.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -18)
         ])
     }
 
@@ -550,13 +598,16 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
         immichTextView.autocapitalizationType = .none
         immichTextView.keyboardType = .URL
         immichTextView.text = UserDefaults.standard.string(forKey: Preferences.immichLink) ?? immichTextView.text
+        configureSMBTextField(immichPasswordField, placeholder: "Shared album password", secure: true)
 
         let loadButton = makeSettingsButton(title: "Load Immich Album", action: #selector(loadImmich))
         let stack = UIStackView(arrangedSubviews: [
             makeSettingsTitleLabel("Shared album link"),
             makeSettingsGroup([
                 immichTextView,
-                makeSettingsLabel("Paste an Immich shared album URL. RevivalFrame reads the shared link directly and displays the album photos."),
+                makeSettingsLabel("Password"),
+                immichPasswordField,
+                makeSettingsLabel("Paste an Immich shared album URL. If the shared link is password protected, enter its password before loading."),
                 loadButton
             ])
         ])
@@ -565,6 +616,10 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
         if immichTextViewHeightConstraint == nil {
             immichTextViewHeightConstraint = immichTextView.heightAnchor.constraint(equalToConstant: 96)
             immichTextViewHeightConstraint?.isActive = true
+        }
+        if immichPasswordFieldHeightConstraint == nil {
+            immichPasswordFieldHeightConstraint = immichPasswordField.heightAnchor.constraint(equalToConstant: 36)
+            immichPasswordFieldHeightConstraint?.isActive = true
         }
         replaceSettingsContent(with: stack)
     }
@@ -786,7 +841,7 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
             return
         }
         immichTextView.text = link
-        loadImmichFromStoredLink(link, automatic: true)
+        loadImmichFromStoredLink(link, password: "", automatic: true)
     }
 
     private func showSelectedSettingsTab() {
@@ -830,34 +885,56 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
         sourceType = source
         photos = newPhotos.isEmpty ? FramePhoto.presets() : newPhotos
         currentIndex = 0
+        requestedIndex = 0
         resetRandomQueue()
         statusLabel.text = status
         showPhoto(at: 0, animated: true)
         updatePlaybackSummary()
     }
 
-    private func showPhoto(at index: Int, animated: Bool) {
+    private func showPhoto(at index: Int, animated: Bool, allowLoadingPlaceholder: Bool = true, updateDetailImmediately: Bool = false) {
         guard photos.indices.contains(index) else { return }
         timer?.invalidate()
         currentPhotoReadyForTiming = false
         let photo = photos[index]
-        detailLabel.text = "\(sourceType.title) | \(index + 1) of \(photos.count) | \(photo.title)"
+        if allowLoadingPlaceholder || updateDetailImmediately {
+            stopDeferredLoadingIndicator()
+        }
+        if updateDetailImmediately {
+            requestedIndex = index
+            updateDetailLabel(for: index)
+        }
         currentImageRequestID = UUID()
         let requestID = currentImageRequestID
 
         if let image = photo.image {
+            currentIndex = index
+            requestedIndex = index
+            waitingForPreparedPhoto = false
+            stopDeferredLoadingIndicator()
+            updateDetailLabel(for: index)
             displayPlaybackImage(image, animated: animated)
             prefetchUpcomingPhotos(after: index)
             return
         }
 
         if let imageName = photo.imageName, let image = UIImage(named: imageName) {
+            currentIndex = index
+            requestedIndex = index
+            waitingForPreparedPhoto = false
+            stopDeferredLoadingIndicator()
+            updateDetailLabel(for: index)
             displayPlaybackImage(image, animated: animated)
             prefetchUpcomingPhotos(after: index)
             return
         }
 
         guard let remoteURL = photo.remoteURL else {
+            currentIndex = index
+            requestedIndex = index
+            waitingForPreparedPhoto = false
+            stopDeferredLoadingIndicator()
+            updateDetailLabel(for: index)
             displayPlaybackImage(FramePhoto.placeholder(title: "Photo unavailable", subtitle: photo.title), animated: animated)
             prefetchUpcomingPhotos(after: index)
             return
@@ -865,34 +942,96 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
         let smbApplyIDForPhoto = pendingSMBApplyFirstURL == remoteURL ? pendingSMBApplyID : nil
 
         if let cached = imageCache.object(forKey: remoteURL as NSURL) {
+            currentIndex = index
+            requestedIndex = index
+            waitingForPreparedPhoto = false
+            stopDeferredLoadingIndicator()
+            updateDetailLabel(for: index)
             displayPlaybackImage(cached, animated: animated) { [weak self] in
                 self?.finishSMBApplyIfNeeded(for: remoteURL, applyID: smbApplyIDForPhoto)
             }
-            removeCachedImage(for: remoteURL)
+            cleanupCacheAroundCurrentIndex()
             prefetchUpcomingPhotos(after: index)
             return
         }
 
-        if cachedFileURLs[remoteURL] == nil {
+        if cachedFileURLs[remoteURL] == nil && allowLoadingPlaceholder {
             display(image: FramePhoto.placeholder(title: "Loading photo", subtitle: photo.title), animated: animated)
+        } else if cachedFileURLs[remoteURL] == nil {
+            waitingForPreparedPhoto = true
+            statusLabel.text = "Preparing next photo: \(photo.title)"
+            startDeferredLoadingIndicator()
         }
         loadRemoteImage(remoteURL) { [weak self] image in
             guard let self = self else { return }
             guard self.currentImageRequestID == requestID else { return }
             guard let image = image else {
-                self.displayPlaybackImage(FramePhoto.placeholder(title: "Photo unavailable", subtitle: photo.title), animated: true) { [weak self] in
-                    self?.finishSMBApplyIfNeeded(for: remoteURL, applyID: smbApplyIDForPhoto)
+                self.waitingForPreparedPhoto = false
+                self.stopDeferredLoadingIndicator()
+                if allowLoadingPlaceholder {
+                    self.currentIndex = index
+                    self.requestedIndex = index
+                    self.updateDetailLabel(for: index)
+                    self.displayPlaybackImage(FramePhoto.placeholder(title: "Photo unavailable", subtitle: photo.title), animated: true) { [weak self] in
+                        self?.finishSMBApplyIfNeeded(for: remoteURL, applyID: smbApplyIDForPhoto)
+                    }
+                } else {
+                    self.statusLabel.text = "Skipping unavailable photo: \(photo.title)"
+                    self.skipUnavailablePhoto(after: index)
                 }
                 return
             }
 
+            self.currentIndex = index
+            self.requestedIndex = index
+            self.waitingForPreparedPhoto = false
+            self.stopDeferredLoadingIndicator()
+            self.updateDetailLabel(for: index)
             self.displayPlaybackImage(image, animated: true) { [weak self] in
                 self?.finishSMBApplyIfNeeded(for: remoteURL, applyID: smbApplyIDForPhoto)
             }
-            self.removeCachedImage(for: remoteURL)
+            self.cleanupCacheAroundCurrentIndex()
             self.prefetchUpcomingPhotos(after: index)
         }
         prefetchUpcomingPhotos(after: index)
+    }
+
+    private func updateDetailLabel(for index: Int) {
+        guard photos.indices.contains(index) else { return }
+        let photo = photos[index]
+        detailLabel.text = "\(sourceType.title) | \(index + 1) of \(photos.count) | \(photo.title)"
+    }
+
+    private func startDeferredLoadingIndicator() {
+        guard isPlaying else { return }
+        deferredLoadingStep = 0
+        updateDeferredLoadingText()
+        deferredLoadingLabel.isHidden = false
+        UIView.animate(withDuration: 0.2) {
+            self.deferredLoadingLabel.alpha = 1
+        }
+        guard deferredLoadingTimer == nil else { return }
+        deferredLoadingTimer = Timer.scheduledTimer(withTimeInterval: 0.45, repeats: true) { [weak self] _ in
+            guard let self = self else { return }
+            self.deferredLoadingStep = (self.deferredLoadingStep + 1) % 4
+            self.updateDeferredLoadingText()
+        }
+    }
+
+    private func stopDeferredLoadingIndicator() {
+        deferredLoadingTimer?.invalidate()
+        deferredLoadingTimer = nil
+        guard !deferredLoadingLabel.isHidden || deferredLoadingLabel.alpha > 0 else { return }
+        UIView.animate(withDuration: 0.15, animations: {
+            self.deferredLoadingLabel.alpha = 0
+        }, completion: { _ in
+            self.deferredLoadingLabel.isHidden = true
+        })
+    }
+
+    private func updateDeferredLoadingText() {
+        let dots = String(repeating: ".", count: deferredLoadingStep)
+        deferredLoadingLabel.text = "Loading\(dots)"
     }
 
     private func configureImageCache() {
@@ -1081,17 +1220,17 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
         }
 
         while cachedImageBytes < cacheLimitBytes && remoteImageCompletions.count < maxConcurrentRemoteLoads {
-            guard let url = nextPrefetchURL(after: index) else { break }
+            guard let url = nextPrefetchURL(after: index, windowCount: prefetchWindowCount) else { break }
             loadRemoteImage(url, shouldDecode: false) { _ in }
         }
         updateCacheStatus()
     }
 
-    private func nextPrefetchURL(after index: Int) -> URL? {
+    private func nextPrefetchURL(after index: Int, windowCount: Int) -> URL? {
         guard photos.count > 1 else { return nil }
         if playbackOrder == .random {
             ensureRandomQueue()
-            for next in randomIndexQueue {
+            for next in randomIndexQueue.prefix(windowCount) {
                 if let url = photos[next].remoteURL,
                    cachedFileURLs[url] == nil,
                    remoteImageTasks[url] == nil,
@@ -1103,7 +1242,7 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
             return nil
         }
 
-        for offset in 1..<photos.count {
+        for offset in 1...min(windowCount, photos.count - 1) {
             let next = (index + offset) % photos.count
             if let url = photos[next].remoteURL,
                cachedFileURLs[url] == nil,
@@ -1117,6 +1256,8 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
     }
 
     private func cancelRemoteImageLoads() {
+        waitingForPreparedPhoto = false
+        stopDeferredLoadingIndicator()
         remoteImageTasks.values.forEach { $0.cancel() }
         remoteImageTasks.removeAll()
         remoteImageCompletions.removeAll()
@@ -1133,7 +1274,7 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
 
     private func updateCacheStatus() {
         guard isViewLoaded else { return }
-        cacheStatusLabel.text = "Temp cache \(formatBytes(cachedImageBytes)) / \(cacheSizeMB) MB. Active downloads: \(remoteImageCompletions.count). Played files are deleted immediately."
+        cacheStatusLabel.text = "Temp cache \(formatBytes(cachedImageBytes)) / \(cacheSizeMB) MB. Active downloads: \(remoteImageCompletions.count). Protected window: \(prefetchWindowCount + 2) photos."
         updateDownloadRateLabel()
     }
 
@@ -1210,8 +1351,17 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
     }
 
     private func storeCachedFile(at fileURL: URL, for url: URL, cost: Int) {
-        guard cost <= cacheLimitBytes,
-              cachedImageBytes + cost <= cacheLimitBytes else {
+        cleanupCacheAroundCurrentIndex(extraProtectedURL: url)
+        guard cost <= cacheLimitBytes else {
+            try? FileManager.default.removeItem(at: fileURL)
+            deferredPrefetchURLs.insert(url)
+            updateCacheStatus()
+            return
+        }
+        if cachedImageBytes + cost > cacheLimitBytes {
+            evictCacheFiles(keeping: protectedRemoteURLs(extra: [url]), targetFreeBytes: cost)
+        }
+        guard cachedImageBytes + cost <= cacheLimitBytes else {
             try? FileManager.default.removeItem(at: fileURL)
             deferredPrefetchURLs.insert(url)
             updateCacheStatus()
@@ -1222,6 +1372,48 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
         cachedFileCosts[url] = cost
         deferredPrefetchURLs.remove(url)
         updateCacheStatus()
+    }
+
+    private func cleanupCacheAroundCurrentIndex(extraProtectedURL: URL? = nil) {
+        evictCacheFiles(keeping: protectedRemoteURLs(extra: extraProtectedURL.map { [$0] } ?? []), targetFreeBytes: 0)
+        updateCacheStatus()
+    }
+
+    private func protectedRemoteURLs(extra: [URL] = []) -> Set<URL> {
+        var protected = Set(extra)
+        guard !photos.isEmpty else { return protected }
+
+        let previous = (currentIndex - 1 + photos.count) % photos.count
+        [previous, currentIndex].forEach { index in
+            if photos.indices.contains(index), let url = photos[index].remoteURL {
+                protected.insert(url)
+            }
+        }
+
+        if playbackOrder == .random {
+            ensureRandomQueue()
+            for index in randomIndexQueue.prefix(prefetchWindowCount) {
+                if photos.indices.contains(index), let url = photos[index].remoteURL {
+                    protected.insert(url)
+                }
+            }
+        } else if photos.count > 1 {
+            for offset in 1...min(prefetchWindowCount, photos.count - 1) {
+                let index = (currentIndex + offset) % photos.count
+                if let url = photos[index].remoteURL {
+                    protected.insert(url)
+                }
+            }
+        }
+        return protected
+    }
+
+    private func evictCacheFiles(keeping protected: Set<URL>, targetFreeBytes: Int) {
+        guard !cachedFileURLs.isEmpty else { return }
+        let targetLimit = max(0, cacheLimitBytes - targetFreeBytes)
+        for url in Array(cachedFileURLs.keys) where cachedImageBytes > targetLimit && !protected.contains(url) {
+            removeCachedImage(for: url)
+        }
     }
 
     private func removeCachedImage(for url: URL) {
@@ -1296,12 +1488,14 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
 
     private func resetRandomQueue() {
         randomIndexQueue.removeAll()
+        randomPlaybackHistory.removeAll()
         ensureRandomQueue()
     }
 
-    private func ensureRandomQueue() {
+    private func ensureRandomQueue(excluding excludedIndex: Int? = nil) {
         guard playbackOrder == .random, photos.count > 1, randomIndexQueue.isEmpty else { return }
-        var indices = Array(photos.indices).filter { $0 != currentIndex }
+        let excludedIndex = excludedIndex ?? currentIndex
+        var indices = Array(photos.indices).filter { $0 != excludedIndex }
         for index in stride(from: indices.count - 1, through: 1, by: -1) {
             let swapIndex = Int(arc4random_uniform(UInt32(index + 1)))
             if index != swapIndex {
@@ -1314,9 +1508,24 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
     private func displayPlaybackImage(_ image: UIImage, animated: Bool, completion: (() -> Void)? = nil) {
         display(image: image, animated: animated) { [weak self] in
             guard let self = self else { return }
+            self.recordDisplayedIndex(self.currentIndex)
             self.currentPhotoReadyForTiming = true
             self.scheduleNextPhotoTimer()
             completion?()
+        }
+    }
+
+    private func recordDisplayedIndex(_ index: Int) {
+        guard photos.indices.contains(index) else { return }
+        if playbackOrder == .random {
+            if randomPlaybackHistory.last != index {
+                randomPlaybackHistory.append(index)
+            }
+            if randomPlaybackHistory.count > 200 {
+                randomPlaybackHistory.removeFirst(randomPlaybackHistory.count - 200)
+            }
+        } else {
+            randomPlaybackHistory.removeAll()
         }
     }
 
@@ -1459,6 +1668,53 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
         return (currentIndex + 1) % photos.count
     }
 
+    private func nextRandomRequestedIndex() -> Int {
+        guard photos.count > 1 else { return 0 }
+        ensureRandomQueue(excluding: requestedIndex)
+        if randomIndexQueue.isEmpty {
+            return requestedIndex
+        }
+        return randomIndexQueue.removeFirst()
+    }
+
+    private func sequentialNextIndex(from index: Int) -> Int {
+        guard photos.count > 1 else { return 0 }
+        return (index + 1) % photos.count
+    }
+
+    private func sequentialPreviousIndex(from index: Int) -> Int {
+        guard photos.count > 1 else { return 0 }
+        return (index - 1 + photos.count) % photos.count
+    }
+
+    private func showManuallyRequestedPhoto(at index: Int) {
+        guard photos.indices.contains(index) else { return }
+        if playbackOrder == .random {
+            recordDisplayedIndex(index)
+        }
+        showPhoto(at: index, animated: true, allowLoadingPlaceholder: true, updateDetailImmediately: true)
+    }
+
+    private func skipUnavailablePhoto(after failedIndex: Int) {
+        guard isPlaying, photos.count > 1 else {
+            currentPhotoReadyForTiming = true
+            scheduleNextPhotoTimer()
+            return
+        }
+        let fallbackIndex: Int
+        if playbackOrder == .random {
+            fallbackIndex = nextIndex()
+        } else {
+            fallbackIndex = (failedIndex + 1) % photos.count
+        }
+        guard fallbackIndex != currentIndex else {
+            currentPhotoReadyForTiming = true
+            scheduleNextPhotoTimer()
+            return
+        }
+        showPhoto(at: fallbackIndex, animated: true, allowLoadingPlaceholder: false)
+    }
+
     private func updatePlaybackSummary() {
         summaryLabel.text = "\(sourceType.title) | \(transitionMode.title) | \(playbackOrder.title) | \(Int(interval))s"
         intervalValueLabel.text = "\(Int(interval))s"
@@ -1488,26 +1744,51 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
     }
 
     @objc private func timerAdvanced() {
-        currentIndex = nextIndex()
-        showPhoto(at: currentIndex, animated: true)
+        showPhoto(at: nextIndex(), animated: true, allowLoadingPlaceholder: false)
     }
 
     @objc private func previousPhoto() {
         guard !photos.isEmpty else { return }
-        currentIndex = (currentIndex - 1 + photos.count) % photos.count
-        showPhoto(at: currentIndex, animated: true)
+        if playbackOrder == .random, randomPlaybackHistory.count >= 2 {
+            let targetIndex = randomPlaybackHistory[randomPlaybackHistory.count - 2]
+            randomPlaybackHistory.removeLast()
+            showPhoto(at: targetIndex, animated: true, allowLoadingPlaceholder: true, updateDetailImmediately: true)
+            return
+        }
+        showManuallyRequestedPhoto(at: sequentialPreviousIndex(from: requestedIndex))
     }
 
     @objc private func nextPhoto() {
         guard !photos.isEmpty else { return }
-        currentIndex = nextIndex()
-        showPhoto(at: currentIndex, animated: true)
+        if playbackOrder == .random {
+            showManuallyRequestedPhoto(at: nextRandomRequestedIndex())
+        } else {
+            showManuallyRequestedPhoto(at: sequentialNextIndex(from: requestedIndex))
+        }
     }
 
     @objc private func shufflePhoto() {
         guard !photos.isEmpty else { return }
-        currentIndex = nextIndex()
-        showPhoto(at: currentIndex, animated: true)
+        if playbackOrder == .random {
+            showManuallyRequestedPhoto(at: nextRandomRequestedIndex())
+        } else {
+            showManuallyRequestedPhoto(at: sequentialNextIndex(from: requestedIndex))
+        }
+    }
+
+    @objc private func handleSwipe(_ gesture: UISwipeGestureRecognizer) {
+        switch gesture.direction {
+        case .left:
+            nextPhoto()
+        case .right:
+            previousPhoto()
+        default:
+            break
+        }
+    }
+
+    @objc private func handleDoubleTap() {
+        togglePlayback()
     }
 
     @objc private func togglePlayback() {
@@ -1515,8 +1796,12 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
         playPauseButton.setTitle(isPlaying ? "Pause" : "Play", for: .normal)
         if isPlaying && currentPhotoReadyForTiming {
             scheduleNextPhotoTimer()
+            if waitingForPreparedPhoto {
+                startDeferredLoadingIndicator()
+            }
         } else {
             timer?.invalidate()
+            stopDeferredLoadingIndicator()
         }
     }
 
@@ -1553,14 +1838,15 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
         view.endEditing(true)
         disconnectSMB()
         let link = immichTextView.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let password = immichPasswordField.text ?? ""
         UserDefaults.standard.set(link, forKey: Preferences.immichLink)
         saveSourcePreference(.immich)
-        loadImmichFromStoredLink(link, automatic: false)
+        loadImmichFromStoredLink(link, password: password, automatic: false)
     }
 
-    private func loadImmichFromStoredLink(_ link: String, automatic: Bool) {
+    private func loadImmichFromStoredLink(_ link: String, password: String, automatic: Bool) {
         statusLabel.text = "Loading Immich shared album..."
-        immichClient.loadSharedAlbum(link) { [weak self] result in
+        immichClient.loadSharedAlbum(link, password: password) { [weak self] result in
             DispatchQueue.main.async {
                 guard let self = self else { return }
                 switch result {
@@ -2074,6 +2360,7 @@ private enum ImmichError: LocalizedError {
     case missingAlbum
     case noPhotos
     case invalidResponse
+    case passwordRequired
 
     var errorDescription: String? {
         switch self {
@@ -2081,6 +2368,7 @@ private enum ImmichError: LocalizedError {
         case .missingAlbum: return "This Immich share link does not expose an album."
         case .noPhotos: return "No photos were found in this Immich shared album."
         case .invalidResponse: return "Immich returned an unexpected response."
+        case .passwordRequired: return "This Immich shared album needs a password."
         }
     }
 }
@@ -2089,8 +2377,12 @@ private final class ImmichShareClient {
     private struct SharedLinkResponse: Decodable {
         struct Album: Decodable {
             let id: String
+            let albumName: String?
+            let assetCount: Int?
         }
         let album: Album?
+        let key: String?
+        let token: String?
     }
 
     private struct AlbumResponse: Decodable {
@@ -2100,13 +2392,22 @@ private final class ImmichShareClient {
         }
         let albumName: String?
         let assetCount: Int?
-        let assets: [Asset]
+        let assets: [Asset]?
     }
 
-    func loadSharedAlbum(_ shareLink: String, completion: @escaping (Result<ImmichAlbum, Error>) -> Void) {
+    private struct SearchResponse: Decodable {
+        struct AssetResults: Decodable {
+            let total: Int?
+            let count: Int?
+            let items: [AlbumResponse.Asset]
+        }
+        let assets: AssetResults
+    }
+
+    func loadSharedAlbum(_ shareLink: String, password: String, completion: @escaping (Result<ImmichAlbum, Error>) -> Void) {
         do {
             let parsed = try parseShareLink(shareLink)
-            getJSON(parsed.sharedLinkInfoURL) { (sharedResult: Result<SharedLinkResponse, Error>) in
+            loadSharedLinkInfo(parsed: parsed, password: password) { sharedResult in
                 switch sharedResult {
                 case .failure(let error):
                     completion(.failure(error))
@@ -2115,7 +2416,8 @@ private final class ImmichShareClient {
                         completion(.failure(ImmichError.missingAlbum))
                         return
                     }
-                    self.loadAlbum(parsed: parsed, albumId: albumId, completion: completion)
+                    let authenticated = parsed.authenticated(withKey: sharedInfo.key, token: sharedInfo.token)
+                    self.loadAlbum(parsed: authenticated, albumId: albumId, fallbackName: sharedInfo.album?.albumName, fallbackAssetCount: sharedInfo.album?.assetCount, completion: completion)
                 }
             }
         } catch {
@@ -2123,39 +2425,94 @@ private final class ImmichShareClient {
         }
     }
 
-    private func loadAlbum(parsed: ParsedImmichShare, albumId: String, completion: @escaping (Result<ImmichAlbum, Error>) -> Void) {
+    private func loadSharedLinkInfo(parsed: ParsedImmichShare, password: String, completion: @escaping (Result<SharedLinkResponse, Error>) -> Void) {
+        let trimmedPassword = password.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmedPassword.isEmpty {
+            getJSON(parsed.sharedLinkInfoURL) { (result: Result<SharedLinkResponse, Error>) in
+                completion(result)
+            }
+            return
+        }
+
+        var request = URLRequest(url: parsed.sharedLinkLoginURL)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try? JSONSerialization.data(withJSONObject: ["password": trimmedPassword], options: [])
+        sendJSON(request, completion: completion)
+    }
+
+    private func loadAlbum(parsed: ParsedImmichShare, albumId: String, fallbackName: String?, fallbackAssetCount: Int?, completion: @escaping (Result<ImmichAlbum, Error>) -> Void) {
         getJSON(parsed.albumURL(albumId: albumId)) { (albumResult: Result<AlbumResponse, Error>) in
             switch albumResult {
             case .failure(let error):
                 completion(.failure(error))
             case .success(let album):
-                let photoURLs = album.assets
-                    .filter { $0.type == "IMAGE" }
-                    .map { parsed.originalURL(assetId: $0.id) }
-                guard !photoURLs.isEmpty else {
-                    completion(.failure(ImmichError.noPhotos))
+                if let assets = album.assets, !assets.isEmpty {
+                    let photoURLs = assets
+                        .filter { $0.type == "IMAGE" }
+                        .map { parsed.originalURL(assetId: $0.id) }
+                    self.completeAlbum(name: album.albumName ?? fallbackName, assetCount: album.assetCount ?? fallbackAssetCount, photoURLs: photoURLs, completion: completion)
                     return
                 }
-                completion(.success(ImmichAlbum(
-                    name: album.albumName ?? "Immich album",
-                    assetCount: album.assetCount ?? photoURLs.count,
-                    photoURLs: photoURLs
-                )))
+                self.loadAlbumAssets(parsed: parsed, albumId: albumId, albumName: album.albumName ?? fallbackName, assetCount: album.assetCount ?? fallbackAssetCount, completion: completion)
             }
         }
+    }
+
+    private func loadAlbumAssets(parsed: ParsedImmichShare, albumId: String, albumName: String?, assetCount: Int?, completion: @escaping (Result<ImmichAlbum, Error>) -> Void) {
+        var request = URLRequest(url: parsed.searchMetadataURL)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try? JSONSerialization.data(withJSONObject: ["albumIds": [albumId]], options: [])
+        sendJSON(request) { (searchResult: Result<SearchResponse, Error>) in
+            switch searchResult {
+            case .failure(let error):
+                completion(.failure(error))
+            case .success(let search):
+                let photoURLs = search.assets.items
+                    .filter { $0.type == "IMAGE" }
+                    .map { parsed.originalURL(assetId: $0.id) }
+                self.completeAlbum(name: albumName, assetCount: assetCount ?? search.assets.total ?? search.assets.count, photoURLs: photoURLs, completion: completion)
+            }
+        }
+    }
+
+    private func completeAlbum(name: String?, assetCount: Int?, photoURLs: [URL], completion: @escaping (Result<ImmichAlbum, Error>) -> Void) {
+        guard !photoURLs.isEmpty else {
+            completion(.failure(ImmichError.noPhotos))
+            return
+        }
+        completion(.success(ImmichAlbum(
+            name: name ?? "Immich album",
+            assetCount: assetCount ?? photoURLs.count,
+            photoURLs: photoURLs
+        )))
     }
 
     private func getJSON<T: Decodable>(_ url: URL, completion: @escaping (Result<T, Error>) -> Void) {
         var request = URLRequest(url: url)
         request.setValue("application/json", forHTTPHeaderField: "Accept")
+        sendJSON(request, completion: completion)
+    }
+
+    private func sendJSON<T: Decodable>(_ request: URLRequest, completion: @escaping (Result<T, Error>) -> Void) {
         URLSession.shared.dataTask(with: request) { data, response, error in
             if let error = error {
                 completion(.failure(error))
                 return
             }
             guard let data = data,
-                  let http = response as? HTTPURLResponse,
-                  (200..<300).contains(http.statusCode) else {
+                  let http = response as? HTTPURLResponse else {
+                completion(.failure(ImmichError.invalidResponse))
+                return
+            }
+            if http.statusCode == 401 || http.statusCode == 403 {
+                completion(.failure(ImmichError.passwordRequired))
+                return
+            }
+            guard (200..<300).contains(http.statusCode) else {
                 completion(.failure(ImmichError.invalidResponse))
                 return
             }
@@ -2177,8 +2534,14 @@ private final class ImmichShareClient {
         }
 
         let segments = url.pathComponents.filter { $0 != "/" }
-        guard let shareIndex = segments.firstIndex(of: "share"),
-              segments.indices.contains(shareIndex + 1) else {
+        let key: ParsedImmichShare.Credential
+        if let shareIndex = segments.firstIndex(of: "share"),
+           segments.indices.contains(shareIndex + 1) {
+            key = .key(segments[shareIndex + 1])
+        } else if let slugIndex = segments.firstIndex(of: "s"),
+                  segments.indices.contains(slugIndex + 1) {
+            key = .slug(segments[slugIndex + 1])
+        } else {
             throw ImmichError.invalidLink
         }
 
@@ -2190,16 +2553,26 @@ private final class ImmichShareClient {
             throw ImmichError.invalidLink
         }
 
-        return ParsedImmichShare(baseURL: baseURL, key: segments[shareIndex + 1])
+        return ParsedImmichShare(baseURL: baseURL, credential: key)
     }
 }
 
 private struct ParsedImmichShare {
+    enum Credential {
+        case key(String)
+        case slug(String)
+        case token(String)
+    }
+
     let baseURL: URL
-    let key: String
+    let credential: Credential
 
     var sharedLinkInfoURL: URL {
         return url(path: "/api/shared-links/me")
+    }
+
+    var sharedLinkLoginURL: URL {
+        return url(path: "/api/shared-links/login")
     }
 
     func albumURL(albumId: String) -> URL {
@@ -2210,10 +2583,29 @@ private struct ParsedImmichShare {
         return url(path: "/api/assets/\(assetId)/original")
     }
 
+    var searchMetadataURL: URL {
+        return url(path: "/api/search/metadata")
+    }
+
+    func authenticated(withKey key: String?, token: String?) -> ParsedImmichShare {
+        if let key = key, !key.isEmpty {
+            return ParsedImmichShare(baseURL: baseURL, credential: .key(key))
+        }
+        guard let token = token, !token.isEmpty else { return self }
+        return ParsedImmichShare(baseURL: baseURL, credential: .token(token))
+    }
+
     private func url(path: String) -> URL {
         var components = URLComponents(url: baseURL, resolvingAgainstBaseURL: false)!
         components.path = path
-        components.queryItems = [URLQueryItem(name: "key", value: key)]
+        switch credential {
+        case .key(let value):
+            components.queryItems = [URLQueryItem(name: "key", value: value)]
+        case .slug(let value):
+            components.queryItems = [URLQueryItem(name: "slug", value: value)]
+        case .token(let value):
+            components.queryItems = [URLQueryItem(name: "token", value: value)]
+        }
         return components.url!
     }
 }

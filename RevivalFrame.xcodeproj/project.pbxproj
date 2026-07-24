@@ -145,7 +145,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = 66TCQT9BYF;
+				DEVELOPMENT_TEAM = LVFWFB9SCC;
 				ENABLE_DEBUG_DYLIB = NO;
 				GCC_PREPROCESSOR_DEFINITIONS = (
 					"$(inherited)",
@@ -179,7 +179,7 @@
 					"-framework",
 					SystemConfiguration,
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = com.revivalframe.ios;
+				PRODUCT_BUNDLE_IDENTIFIER = com.revivalframe.ipad;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_OBJC_BRIDGING_HEADER = "RevivalFrame/RevivalFrame-Bridging-Header.h";
@@ -195,7 +195,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = 66TCQT9BYF;
+				DEVELOPMENT_TEAM = LVFWFB9SCC;
 				ENABLE_DEBUG_DYLIB = NO;
 				GCC_PREPROCESSOR_DEFINITIONS = (
 					"$(inherited)",
@@ -229,7 +229,7 @@
 					"-framework",
 					SystemConfiguration,
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = com.revivalframe.ios;
+				PRODUCT_BUNDLE_IDENTIFIER = com.revivalframe.ipad;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_OBJC_BRIDGING_HEADER = "RevivalFrame/RevivalFrame-Bridging-Header.h";
