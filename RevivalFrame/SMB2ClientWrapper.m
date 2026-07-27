@@ -43,13 +43,13 @@ static NSString * const SMB2ClientWrapperErrorDomain = @"RevivalFrame.SMB2Client
     NSString *urlWithOptions = [self normalizedURLString:urlString];
     struct smb2_url *url = smb2_parse_url(_context, urlWithOptions.UTF8String);
     if (url == NULL) {
-        [self setLastSMBError:error fallback:@"Enter an SMB URL like smb://server/share/folder."];
+        [self setLastSMBError:error fallback:@"Enter a valid SMB server, port, and Share Name."];
         [self disconnect];
         return nil;
     }
 
     if (smb2_connect_share(_context, url->server, url->share, url->user) != 0) {
-        [self setLastSMBError:error fallback:@"Unable to connect to SMB share."];
+        [self setLastSMBConnectError:error fallback:@"Unable to connect to SMB share."];
         smb2_destroy_url(url);
         [self disconnect];
         return nil;
@@ -205,6 +205,35 @@ static NSString * const SMB2ClientWrapperErrorDomain = @"RevivalFrame.SMB2Client
     const char *message = _context ? smb2_get_error(_context) : NULL;
     NSString *text = message && strlen(message) > 0 ? [NSString stringWithUTF8String:message] : fallback;
     [self setError:error message:text];
+}
+
+- (void)setLastSMBConnectError:(NSError **)error fallback:(NSString *)fallback
+{
+    const char *message = _context ? smb2_get_error(_context) : NULL;
+    NSString *text = message && strlen(message) > 0 ? [NSString stringWithUTF8String:message] : fallback;
+    [self setError:error message:[self userFacingConnectErrorForMessage:text]];
+}
+
+- (NSString *)userFacingConnectErrorForMessage:(NSString *)message
+{
+    NSString *lower = message.lowercaseString;
+    BOOL looksLikeAuthFailure =
+        [lower containsString:@"logon"] ||
+        [lower containsString:@"access denied"] ||
+        [lower containsString:@"password"] ||
+        [lower containsString:@"permission"] ||
+        [lower containsString:@"errno:9"] ||
+        [lower containsString:@"read from socket failed"];
+
+    if (looksLikeAuthFailure) {
+        return @"Unable to connect to SMB. Check the username and password, then try again.";
+    }
+
+    if ([lower containsString:@"socket"] || [lower containsString:@"timed out"] || [lower containsString:@"timeout"]) {
+        return @"Unable to reach the SMB server. Check the server address, port, and network connection.";
+    }
+
+    return message;
 }
 
 - (void)setError:(NSError **)error message:(NSString *)message

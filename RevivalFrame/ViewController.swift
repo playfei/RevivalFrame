@@ -63,6 +63,8 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
     private let immichTextView = UITextView()
     private let immichPasswordField = UITextField()
     private let smbURLField = UITextField()
+    private let smbPortField = UITextField()
+    private let smbShareNameField = UITextField()
     private let smbUsernameField = UITextField()
     private let smbPasswordField = UITextField()
     private let smbDirectoryTableView = UITableView(frame: .zero, style: .plain)
@@ -89,6 +91,7 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
     private var requestedIndex = 0
     private var isPlaying = true
     private var timer: Timer?
+    private var panelsAutoHideTimer: Timer?
     private var panelsVisible = true
     private var settingsVisible = false
     private var sourceType: PhotoSourceType = .presets
@@ -118,6 +121,7 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
     private var kenBurnsDirection = CGPoint(x: 1, y: 1)
     private var smbConnection: SMBConnection?
     private var smbCurrentDirectory: SMBDirectory?
+    private var selectedSMBDirectories: [String: SMBDirectory] = [:]
     private var smbDirectoryStack: [SMBDirectory] = []
     private var isApplyingSMBFolder = false
     private var activeSMBApplyID = UUID()
@@ -133,6 +137,9 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
     private var immichPasswordFieldHeightConstraint: NSLayoutConstraint?
     private var intervalValueWidthConstraint: NSLayoutConstraint?
     private var smbURLFieldHeightConstraint: NSLayoutConstraint?
+    private var smbPortFieldHeightConstraint: NSLayoutConstraint?
+    private var smbShareNameFieldHeightConstraint: NSLayoutConstraint?
+    private var smbPortFieldWidthConstraint: NSLayoutConstraint?
     private var smbUsernameFieldHeightConstraint: NSLayoutConstraint?
     private var smbPasswordFieldHeightConstraint: NSLayoutConstraint?
     private var smbConnectButtonHeightConstraint: NSLayoutConstraint?
@@ -169,6 +176,8 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
         static let sourceType = "sourceType"
         static let immichLink = "immichLink"
         static let smbURL = "smbURL"
+        static let smbPort = "smbPort"
+        static let smbShareName = "smbShareName"
         static let smbUsername = "smbUsername"
         static let transitionMode = "transitionMode"
         static let playbackOrder = "playbackOrder"
@@ -176,6 +185,15 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
         static let cacheSizeMB = "cacheSizeMB"
         static let settingsTab = "settingsTab"
     }
+
+    private enum FeedbackIcon {
+        case play
+        case pause
+        case next
+        case previous
+    }
+
+    private let panelsAutoHideInterval: TimeInterval = 15
 
     override var prefersStatusBarHidden: Bool {
         return true
@@ -203,6 +221,7 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
     override func viewDidDisappear(_ animated: Bool) {
         super.viewDidDisappear(animated)
         timer?.invalidate()
+        panelsAutoHideTimer?.invalidate()
         smbApplyTimeoutTimer?.invalidate()
         downloadRateTimer?.invalidate()
         downloadRateTimer = nil
@@ -468,10 +487,12 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
         return label
     }
 
-    private func makeSettingsGroup(_ arrangedSubviews: [UIView]) -> UIView {
+    private func makeSettingsGroup(_ arrangedSubviews: [UIView], fillVertically: Bool = true) -> UIView {
         let stack = UIStackView(arrangedSubviews: arrangedSubviews)
         stack.axis = .vertical
         stack.spacing = 10
+        stack.alignment = .fill
+        stack.distribution = .fill
         stack.translatesAutoresizingMaskIntoConstraints = false
 
         let container = UIView()
@@ -483,9 +504,12 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
         NSLayoutConstraint.activate([
             stack.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 14),
             stack.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -14),
-            stack.topAnchor.constraint(equalTo: container.topAnchor, constant: 12),
-            stack.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -12)
+            stack.topAnchor.constraint(equalTo: container.topAnchor, constant: 12)
         ])
+        let bottomConstraint = fillVertically
+            ? stack.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -12)
+            : stack.bottomAnchor.constraint(lessThanOrEqualTo: container.bottomAnchor, constant: -12)
+        bottomConstraint.isActive = true
         return container
     }
 
@@ -502,7 +526,7 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
         let stack = UIStackView(arrangedSubviews: groups)
         stack.axis = .horizontal
         stack.spacing = 10
-        stack.alignment = .fill
+        stack.alignment = .top
         stack.distribution = .fill
         return stack
     }
@@ -625,12 +649,18 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
     }
 
     private func showSMBSettings() {
-        configureSMBTextField(smbURLField, placeholder: "smb://server/share/folder")
+        configureSMBTextField(smbURLField, placeholder: "server or smb://server")
+        configureSMBTextField(smbPortField, placeholder: "445")
+        configureSMBTextField(smbShareNameField, placeholder: "Share Name")
         configureSMBTextField(smbUsernameField, placeholder: "SMB username")
         configureSMBTextField(smbPasswordField, placeholder: "SMB password", secure: true)
         smbURLField.keyboardType = .URL
+        smbPortField.keyboardType = .numberPad
         smbURLField.text = UserDefaults.standard.string(forKey: Preferences.smbURL) ?? smbURLField.text
+        smbPortField.text = UserDefaults.standard.string(forKey: Preferences.smbPort) ?? "445"
+        smbShareNameField.text = UserDefaults.standard.string(forKey: Preferences.smbShareName) ?? smbShareNameField.text
         smbUsernameField.text = UserDefaults.standard.string(forKey: Preferences.smbUsername) ?? smbUsernameField.text
+        populateSMBFieldsFromStoredURLIfNeeded()
 
         configureSettingsButton(smbConnectButton, title: "Connect", action: #selector(connectSMB))
         configureSettingsButton(smbBackButton, title: "Back", action: #selector(backSMBDirectory))
@@ -652,6 +682,39 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
         smbDirectoryTableView.clipsToBounds = true
         smbDirectoryTableView.tableFooterView = UIView()
 
+        let smbURLLabel = makeSettingsLabel("SMB URL")
+        smbURLLabel.widthAnchor.constraint(equalToConstant: 70).isActive = true
+        let smbURLRow = UIStackView(arrangedSubviews: [smbURLLabel, smbURLField])
+        smbURLRow.axis = .horizontal
+        smbURLRow.alignment = .center
+        smbURLRow.spacing = 8
+        smbURLRow.heightAnchor.constraint(equalToConstant: 36).isActive = true
+
+        let portLabel = makeSettingsLabel("Port")
+        portLabel.widthAnchor.constraint(equalToConstant: 36).isActive = true
+        if smbPortFieldWidthConstraint == nil {
+            smbPortFieldWidthConstraint = smbPortField.widthAnchor.constraint(equalToConstant: 84)
+            smbPortFieldWidthConstraint?.isActive = true
+        }
+        let portPair = UIStackView(arrangedSubviews: [portLabel, smbPortField])
+        portPair.axis = .horizontal
+        portPair.alignment = .center
+        portPair.spacing = 6
+
+        let shareNameLabel = makeSettingsLabel("Share Name")
+        shareNameLabel.widthAnchor.constraint(equalToConstant: 82).isActive = true
+        let shareNamePair = UIStackView(arrangedSubviews: [shareNameLabel, smbShareNameField])
+        shareNamePair.axis = .horizontal
+        shareNamePair.alignment = .center
+        shareNamePair.spacing = 6
+
+        let serverDetailsRow = UIStackView(arrangedSubviews: [portPair, shareNamePair])
+        serverDetailsRow.axis = .horizontal
+        serverDetailsRow.alignment = .center
+        serverDetailsRow.spacing = 10
+        serverDetailsRow.distribution = .fill
+        serverDetailsRow.heightAnchor.constraint(equalToConstant: 36).isActive = true
+
         let credentialsRow = UIStackView(arrangedSubviews: [smbUsernameField, smbPasswordField])
         credentialsRow.axis = .horizontal
         credentialsRow.spacing = 8
@@ -671,41 +734,52 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
             smbApplyButtonHeightConstraint?.isActive = true
         }
 
+        let connected = smbConnection != nil
+        let landscape = view.bounds.width > view.bounds.height
+
         let formGroup = makeSettingsGroup([
-            makeSettingsLabel("SMB URL"),
-            smbURLField,
+            smbURLRow,
+            serverDetailsRow,
             makeSettingsLabel("Credentials"),
             credentialsRow,
             buttonRow
-        ])
+        ], fillVertically: !(landscape && connected))
 
         let directoryGroup = makeSettingsGroup([
-            makeSettingsLabel("Connected folders"),
+            makeSMBDirectoryHeaderRow(),
             smbPathLabel,
             smbDirectoryTableView
         ])
 
-        let connected = smbConnection != nil
-        let landscape = view.bounds.width > view.bounds.height
+        let smbContent: UIView
+        if landscape && connected {
+            let horizontalGroups = horizontalSettingsGroups([directoryGroup, formGroup])
+            formGroup.widthAnchor.constraint(equalToConstant: 360).isActive = true
+            smbContent = horizontalGroups
+        } else {
+            smbContent = verticalSettingsGroups([formGroup, directoryGroup])
+        }
         let stack = UIStackView(arrangedSubviews: [
             makeSettingsTitleLabel("SMB source"),
-            landscape && connected ? horizontalSettingsGroups([formGroup, directoryGroup]) : verticalSettingsGroups([formGroup, directoryGroup])
+            smbContent
         ])
         stack.axis = .vertical
         stack.spacing = 8
 
-        if landscape && connected {
-            formGroup.widthAnchor.constraint(equalToConstant: 360).isActive = true
-        } else {
+        if !(landscape && connected) {
             stack.alignment = .fill
         }
         stack.translatesAutoresizingMaskIntoConstraints = false
 
         if smbURLFieldHeightConstraint == nil {
             smbURLFieldHeightConstraint = smbURLField.heightAnchor.constraint(equalToConstant: 36)
+            smbPortFieldHeightConstraint = smbPortField.heightAnchor.constraint(equalToConstant: 36)
+            smbShareNameFieldHeightConstraint = smbShareNameField.heightAnchor.constraint(equalToConstant: 36)
             smbUsernameFieldHeightConstraint = smbUsernameField.heightAnchor.constraint(equalToConstant: 36)
             smbPasswordFieldHeightConstraint = smbPasswordField.heightAnchor.constraint(equalToConstant: 36)
             smbURLFieldHeightConstraint?.isActive = true
+            smbPortFieldHeightConstraint?.isActive = true
+            smbShareNameFieldHeightConstraint?.isActive = true
             smbUsernameFieldHeightConstraint?.isActive = true
             smbPasswordFieldHeightConstraint?.isActive = true
         }
@@ -725,6 +799,51 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
         replaceSettingsContent(with: scrollView, fillVertically: true)
         smbDirectoryTableView.reloadData()
         updateSettingsLayout()
+    }
+
+    private func populateSMBFieldsFromStoredURLIfNeeded() {
+        guard let rawServer = smbURLField.text?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !rawServer.isEmpty else {
+            return
+        }
+
+        let candidate = rawServer.lowercased().hasPrefix("smb://") ? rawServer : "smb://\(rawServer)"
+        guard let components = URLComponents(string: candidate),
+              let host = components.host,
+              !host.isEmpty else {
+            return
+        }
+
+        smbURLField.text = host
+        if let port = components.port,
+           UserDefaults.standard.object(forKey: Preferences.smbPort) == nil {
+            smbPortField.text = "\(port)"
+        }
+
+        let share = components.path.split(separator: "/").map(String.init).first ?? ""
+        if !share.isEmpty,
+           (smbShareNameField.text ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            smbShareNameField.text = share
+        }
+    }
+
+    private func makeSMBDirectoryHeaderRow() -> UIStackView {
+        let title = makeSettingsLabel("Connected folders")
+        title.setContentHuggingPriority(.defaultLow, for: .horizontal)
+
+        let selectAllButton = makeSettingsPlainButton(title: "Select All", action: #selector(selectAllVisibleSMBDirectories))
+        let excludeAllButton = makeSettingsPlainButton(title: "Exclude All", action: #selector(excludeAllVisibleSMBDirectories))
+        selectAllButton.titleLabel?.font = UIFont.systemFont(ofSize: 13, weight: .regular)
+        excludeAllButton.titleLabel?.font = UIFont.systemFont(ofSize: 13, weight: .regular)
+        let hasVisibleFolders = (smbCurrentDirectory?.children.isEmpty == false) && !isApplyingSMBFolder
+        selectAllButton.isEnabled = hasVisibleFolders
+        excludeAllButton.isEnabled = hasVisibleFolders
+
+        let row = UIStackView(arrangedSubviews: [title, selectAllButton, excludeAllButton])
+        row.axis = .horizontal
+        row.alignment = .center
+        row.spacing = 8
+        return row
     }
 
     private func showPlaybackSettings() {
@@ -1511,6 +1630,7 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
             self.recordDisplayedIndex(self.currentIndex)
             self.currentPhotoReadyForTiming = true
             self.scheduleNextPhotoTimer()
+            self.schedulePanelsAutoHide(reset: false)
             completion?()
         }
     }
@@ -1723,6 +1843,12 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
     private func setSettingsVisible(_ visible: Bool) {
         settingsVisible = visible
         if visible {
+            panelsAutoHideTimer?.invalidate()
+            panelsAutoHideTimer = nil
+        } else {
+            schedulePanelsAutoHide(reset: true)
+        }
+        if visible {
             settingsPanel.isHidden = false
         }
         UIView.animate(withDuration: 0.25, animations: {
@@ -1780,8 +1906,10 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
         switch gesture.direction {
         case .left:
             nextPhoto()
+            showFeedbackIcon(.next, position: CGPoint(x: view.bounds.width * 0.76, y: view.bounds.midY))
         case .right:
             previousPhoto()
+            showFeedbackIcon(.previous, position: CGPoint(x: view.bounds.width * 0.24, y: view.bounds.midY))
         default:
             break
         }
@@ -1789,6 +1917,7 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
 
     @objc private func handleDoubleTap() {
         togglePlayback()
+        showFeedbackIcon(isPlaying ? .play : .pause, position: CGPoint(x: view.bounds.midX, y: view.bounds.midY))
     }
 
     @objc private func togglePlayback() {
@@ -1796,23 +1925,153 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
         playPauseButton.setTitle(isPlaying ? "Pause" : "Play", for: .normal)
         if isPlaying && currentPhotoReadyForTiming {
             scheduleNextPhotoTimer()
+            schedulePanelsAutoHide(reset: true)
             if waitingForPreparedPhoto {
                 startDeferredLoadingIndicator()
             }
         } else {
             timer?.invalidate()
+            panelsAutoHideTimer?.invalidate()
+            panelsAutoHideTimer = nil
             stopDeferredLoadingIndicator()
         }
     }
 
     @objc private func togglePanels() {
-        panelsVisible.toggle()
-        let alpha: CGFloat = panelsVisible ? 1 : 0
-        UIView.animate(withDuration: 0.25) {
+        setPanelsVisible(!panelsVisible, animated: true, rescheduleAutoHide: true)
+    }
+
+    private func setPanelsVisible(_ visible: Bool, animated: Bool, rescheduleAutoHide: Bool = false) {
+        panelsVisible = visible
+        let alpha: CGFloat = visible ? 1 : 0
+        let changes = {
             self.topPanel.alpha = alpha
             self.bottomPanel.alpha = alpha
             self.settingsPanel.alpha = self.panelsVisible && self.settingsVisible ? 1 : 0
         }
+        if animated {
+            UIView.animate(withDuration: 0.25, animations: changes)
+        } else {
+            changes()
+        }
+
+        if visible && rescheduleAutoHide {
+            schedulePanelsAutoHide(reset: true)
+        } else if !visible {
+            panelsAutoHideTimer?.invalidate()
+            panelsAutoHideTimer = nil
+        }
+    }
+
+    private func schedulePanelsAutoHide(reset: Bool) {
+        if reset {
+            panelsAutoHideTimer?.invalidate()
+            panelsAutoHideTimer = nil
+        } else if panelsAutoHideTimer != nil {
+            return
+        }
+        guard isPlaying, panelsVisible, !settingsVisible, currentPhotoReadyForTiming else { return }
+        panelsAutoHideTimer = Timer.scheduledTimer(withTimeInterval: panelsAutoHideInterval, repeats: false) { [weak self] _ in
+            guard let self = self,
+                  self.isPlaying,
+                  self.panelsVisible,
+                  !self.settingsVisible else { return }
+            self.setPanelsVisible(false, animated: true)
+        }
+    }
+
+    private func showFeedbackIcon(_ icon: FeedbackIcon, position: CGPoint) {
+        let size: CGFloat = 118
+        let container = UIView(frame: CGRect(x: 0, y: 0, width: size, height: size))
+        container.center = position
+        container.isUserInteractionEnabled = false
+        container.backgroundColor = UIColor(white: 0, alpha: 0.34)
+        container.layer.cornerRadius = size / 2
+        container.layer.shadowColor = UIColor.black.cgColor
+        container.layer.shadowOpacity = 0.35
+        container.layer.shadowRadius = 18
+        container.layer.shadowOffset = CGSize(width: 0, height: 6)
+
+        let imageView = UIImageView(image: feedbackIconImage(icon))
+        imageView.translatesAutoresizingMaskIntoConstraints = false
+        imageView.contentMode = .scaleAspectFit
+        container.addSubview(imageView)
+        NSLayoutConstraint.activate([
+            imageView.centerXAnchor.constraint(equalTo: container.centerXAnchor),
+            imageView.centerYAnchor.constraint(equalTo: container.centerYAnchor),
+            imageView.widthAnchor.constraint(equalToConstant: 58),
+            imageView.heightAnchor.constraint(equalToConstant: 58)
+        ])
+
+        container.alpha = 0
+        container.transform = CGAffineTransform(scaleX: 0.56, y: 0.56)
+        view.addSubview(container)
+        view.bringSubviewToFront(container)
+
+        UIView.animate(withDuration: 0.16, delay: 0, options: [.curveEaseOut, .allowUserInteraction], animations: {
+            container.alpha = 1
+            container.transform = CGAffineTransform(scaleX: 1.0, y: 1.0)
+        }, completion: { _ in
+            UIView.animate(withDuration: 0.34, delay: 0.08, options: [.curveEaseIn, .allowUserInteraction], animations: {
+                container.alpha = 0
+                container.transform = CGAffineTransform(scaleX: 1.36, y: 1.36)
+            }, completion: { _ in
+                container.removeFromSuperview()
+            })
+        })
+    }
+
+    private func feedbackIconImage(_ icon: FeedbackIcon) -> UIImage {
+        let size = CGSize(width: 72, height: 72)
+        UIGraphicsBeginImageContextWithOptions(size, false, 0)
+        UIColor.white.setFill()
+
+        switch icon {
+        case .play:
+            let path = UIBezierPath()
+            path.move(to: CGPoint(x: 25, y: 18))
+            path.addLine(to: CGPoint(x: 25, y: 54))
+            path.addLine(to: CGPoint(x: 54, y: 36))
+            path.close()
+            path.fill()
+        case .pause:
+            UIBezierPath(roundedRect: CGRect(x: 22, y: 18, width: 9, height: 36), cornerRadius: 2).fill()
+            UIBezierPath(roundedRect: CGRect(x: 41, y: 18, width: 9, height: 36), cornerRadius: 2).fill()
+        case .next:
+            drawSkipIcon(flipped: false)
+        case .previous:
+            drawSkipIcon(flipped: true)
+        }
+
+        let image = UIGraphicsGetImageFromCurrentImageContext() ?? UIImage()
+        UIGraphicsEndImageContext()
+        return image
+    }
+
+    private func drawSkipIcon(flipped: Bool) {
+        let context = UIGraphicsGetCurrentContext()
+        context?.saveGState()
+        if flipped {
+            context?.translateBy(x: 72, y: 0)
+            context?.scaleBy(x: -1, y: 1)
+        }
+
+        let first = UIBezierPath()
+        first.move(to: CGPoint(x: 16, y: 18))
+        first.addLine(to: CGPoint(x: 16, y: 54))
+        first.addLine(to: CGPoint(x: 38, y: 36))
+        first.close()
+        first.fill()
+
+        let second = UIBezierPath()
+        second.move(to: CGPoint(x: 34, y: 18))
+        second.addLine(to: CGPoint(x: 34, y: 54))
+        second.addLine(to: CGPoint(x: 56, y: 36))
+        second.close()
+        second.fill()
+
+        UIBezierPath(roundedRect: CGRect(x: 58, y: 18, width: 5, height: 36), cornerRadius: 1.5).fill()
+        context?.restoreGState()
     }
 
     @objc private func toggleSettings() {
@@ -1864,21 +2123,34 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
     @objc private func connectSMB() {
         view.endEditing(true)
         guard !isApplyingSMBFolder else { return }
+
+        guard let smbInput = makeSMBConnectionInput() else {
+            updateSMBActionButtons()
+            return
+        }
+
+        let username = (smbUsernameField.text ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let password = smbPasswordField.text ?? ""
+        if !username.isEmpty && password.isEmpty {
+            statusLabel.text = "Enter the SMB password for this username."
+            updateSMBActionButtons()
+            return
+        }
+
         cancelRemoteImageLoads()
         clearImageCache()
         disconnectSMB()
 
-        let url = (smbURLField.text ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-        let username = (smbUsernameField.text ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-        let password = smbPasswordField.text ?? ""
-        UserDefaults.standard.set(url, forKey: Preferences.smbURL)
+        UserDefaults.standard.set(smbInput.server, forKey: Preferences.smbURL)
+        UserDefaults.standard.set(smbInput.port, forKey: Preferences.smbPort)
+        UserDefaults.standard.set(smbInput.shareName, forKey: Preferences.smbShareName)
         UserDefaults.standard.set(username, forKey: Preferences.smbUsername)
         saveSourcePreference(.smb)
         statusLabel.text = "Connecting SMB..."
         smbConnectButton.isEnabled = false
         smbApplyButton.isEnabled = false
 
-        smbLoader.connect(to: url, username: username, password: password) { [weak self] result in
+        smbLoader.connect(to: smbInput.urlString, username: username, password: password) { [weak self] result in
             DispatchQueue.main.async {
                 guard let self = self else { return }
                 switch result {
@@ -1887,17 +2159,19 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
                     self.smbConnection = connection
                     self.smbDirectoryStack = [connection.rootDirectory]
                     self.smbCurrentDirectory = connection.rootDirectory
+                    self.selectedSMBDirectories.removeAll()
                     if self.settingsTabs.selectedSegmentIndex == 2 {
                         self.showSMBSettings()
                     } else {
                         self.smbDirectoryTableView.reloadData()
                         self.updateSMBPathLabel()
                     }
-                    self.statusLabel.text = "Connected SMB. Select a folder, then apply it for playback."
+                    self.statusLabel.text = "Connected SMB. Tap folders to select; tap Open to browse."
                     self.updatePlaybackSummary()
                     self.updateSMBActionButtons()
                 case .failure(let error):
                     self.smbCurrentDirectory = nil
+                    self.selectedSMBDirectories.removeAll()
                     self.smbDirectoryStack.removeAll()
                     self.smbDirectoryTableView.reloadData()
                     self.updateSMBPathLabel()
@@ -1907,6 +2181,65 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
                 }
             }
         }
+    }
+
+    private struct SMBConnectionInput {
+        let urlString: String
+        let server: String
+        let port: String
+        let shareName: String
+    }
+
+    private func makeSMBConnectionInput() -> SMBConnectionInput? {
+        let rawServer = (smbURLField.text ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !rawServer.isEmpty else {
+            statusLabel.text = "Enter an SMB server address."
+            return nil
+        }
+
+        let serverCandidate = rawServer.lowercased().hasPrefix("smb://") ? rawServer : "smb://\(rawServer)"
+        guard let components = URLComponents(string: serverCandidate),
+              let host = components.host,
+              !host.isEmpty else {
+            statusLabel.text = "Enter a valid SMB server address."
+            return nil
+        }
+
+        let portText = (smbPortField.text ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !portText.isEmpty else {
+            statusLabel.text = "Enter an SMB port, usually 445."
+            return nil
+        }
+        guard let port = Int(portText), (1...65535).contains(port) else {
+            statusLabel.text = "Enter a valid SMB port from 1 to 65535."
+            return nil
+        }
+
+        let existingPathParts = components.path
+            .split(separator: "/")
+            .map(String.init)
+        let enteredShare = (smbShareNameField.text ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let shareName = enteredShare.isEmpty ? (existingPathParts.first ?? "") : enteredShare
+        guard !shareName.isEmpty else {
+            statusLabel.text = "Enter an SMB Share Name."
+            return nil
+        }
+
+        let subpath = enteredShare.isEmpty ? existingPathParts.dropFirst().joined(separator: "/") : ""
+        var output = URLComponents()
+        output.scheme = "smb"
+        output.host = host
+        output.port = port
+        output.path = subpath.isEmpty ? "/\(shareName)" : "/\(shareName)/\(subpath)"
+        guard let urlString = output.url?.absoluteString else {
+            statusLabel.text = "Enter a valid SMB server, port, and Share Name."
+            return nil
+        }
+
+        smbURLField.text = host
+        smbPortField.text = "\(port)"
+        smbShareNameField.text = shareName
+        return SMBConnectionInput(urlString: urlString, server: host, port: "\(port)", shareName: shareName)
     }
 
     @objc private func backSMBDirectory() {
@@ -1921,10 +2254,14 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
     @objc private func applySelectedSMBFolder() {
         guard !isApplyingSMBFolder else { return }
         guard let connection = smbConnection,
-              let directory = smbCurrentDirectory else {
+              let currentDirectory = smbCurrentDirectory else {
             statusLabel.text = "Connect SMB and select a folder first."
             return
         }
+        let directories = selectedSMBDirectories.values.sorted {
+            $0.displayPath.localizedStandardCompare($1.displayPath) == .orderedAscending
+        }
+        let directoriesToLoad = directories.isEmpty ? [currentDirectory] : directories
         let applyID = UUID()
         activeSMBApplyID = applyID
         isApplyingSMBFolder = true
@@ -1932,8 +2269,8 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
         startSMBApplyTimeout(for: applyID)
         cancelRemoteImageLoads()
         clearImageCache()
-        statusLabel.text = "Loading SMB photos..."
-        smbLoader.loadPhotos(in: directory, connection: connection) { [weak self] result in
+        statusLabel.text = directoriesToLoad.count == 1 ? "Loading SMB photos..." : "Loading SMB photos from \(directoriesToLoad.count) folders..."
+        smbLoader.loadPhotos(in: directoriesToLoad, connection: connection) { [weak self] result in
             DispatchQueue.main.async {
                 guard let self = self else { return }
                 guard self.activeSMBApplyID == applyID else { return }
@@ -1941,7 +2278,8 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
                 case .success(let photos):
                     self.pendingSMBApplyID = applyID
                     self.pendingSMBApplyFirstURL = photos.first?.remoteURL
-                    self.applyPhotos(photos, source: .smb, status: "Loaded \(photos.count) SMB photo(s) from \(directory.name).")
+                    let sourceName = directoriesToLoad.count == 1 ? directoriesToLoad[0].name : "\(directoriesToLoad.count) folders"
+                    self.applyPhotos(photos, source: .smb, status: "Loaded \(photos.count) SMB photo(s) from \(sourceName).")
                 case .failure(let error):
                     self.finishSMBApply()
                     self.statusLabel.text = error.localizedDescription
@@ -1960,6 +2298,7 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
         }
         smbConnection = nil
         smbCurrentDirectory = nil
+        selectedSMBDirectories.removeAll()
         smbDirectoryStack.removeAll()
         smbDirectoryTableView.reloadData()
         updateSMBPathLabel()
@@ -1969,7 +2308,12 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
     private func updateSMBPathLabel() {
         guard isViewLoaded else { return }
         if let directory = smbCurrentDirectory {
-            smbPathLabel.text = directory.displayPath
+            let selectedCount = selectedSMBDirectories.count
+            if selectedCount > 0 {
+                smbPathLabel.text = "\(directory.displayPath)\n\(selectedCount) folder(s) selected."
+            } else {
+                smbPathLabel.text = "\(directory.displayPath)\nTap folders to select; tap Open to browse."
+            }
         } else {
             smbPathLabel.text = "Not connected."
         }
@@ -2047,6 +2391,46 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
         showPhoto(at: currentIndex, animated: false)
     }
 
+    @objc private func selectAllVisibleSMBDirectories() {
+        guard !isApplyingSMBFolder,
+              let children = smbCurrentDirectory?.children,
+              !children.isEmpty else { return }
+        children.forEach { selectedSMBDirectories[$0.path] = $0 }
+        smbDirectoryTableView.reloadData()
+        updateSMBPathLabel()
+        statusLabel.text = "\(selectedSMBDirectories.count) SMB folder(s) selected."
+    }
+
+    @objc private func excludeAllVisibleSMBDirectories() {
+        guard !isApplyingSMBFolder,
+              let children = smbCurrentDirectory?.children,
+              !children.isEmpty else { return }
+        children.forEach { selectedSMBDirectories.removeValue(forKey: $0.path) }
+        smbDirectoryTableView.reloadData()
+        updateSMBPathLabel()
+        statusLabel.text = selectedSMBDirectories.isEmpty ? "No folders selected. Load will use the current folder." : "\(selectedSMBDirectories.count) SMB folder(s) selected."
+    }
+
+    private func smbSelectionIndicatorImage(selected: Bool) -> UIImage {
+        let size = CGSize(width: 18, height: 18)
+        let rect = CGRect(origin: .zero, size: size).insetBy(dx: 3, dy: 3)
+        UIGraphicsBeginImageContextWithOptions(size, false, 0)
+        guard let context = UIGraphicsGetCurrentContext() else {
+            return UIImage()
+        }
+        context.setLineWidth(1.6)
+        if selected {
+            context.setFillColor(settingsBlue.cgColor)
+            context.fillEllipse(in: rect)
+        } else {
+            context.setStrokeColor(UIColor.black.withAlphaComponent(0.72).cgColor)
+            context.strokeEllipse(in: rect)
+        }
+        let image = UIGraphicsGetImageFromCurrentImageContext() ?? UIImage()
+        UIGraphicsEndImageContext()
+        return image
+    }
+
     func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
         guard tableView == smbDirectoryTableView else { return 0 }
         return smbCurrentDirectory?.children.count ?? 0
@@ -2056,14 +2440,28 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
         let identifier = "SMBDirectoryCell"
         let cell = tableView.dequeueReusableCell(withIdentifier: identifier) ?? UITableViewCell(style: .subtitle, reuseIdentifier: identifier)
         if let child = smbCurrentDirectory?.children[indexPath.row] {
+            let selected = selectedSMBDirectories[child.path] != nil
+            cell.imageView?.image = smbSelectionIndicatorImage(selected: selected)
             cell.textLabel?.text = child.name
             cell.detailTextLabel?.text = child.displayPath
-            cell.accessoryType = .disclosureIndicator
+            let openButton = UIButton(type: .system)
+            openButton.setTitle("Open", for: .normal)
+            openButton.titleLabel?.font = UIFont.systemFont(ofSize: 15, weight: .regular)
+            openButton.setTitleColor(settingsBlue, for: .normal)
+            openButton.contentEdgeInsets = UIEdgeInsets(top: 6, left: 8, bottom: 6, right: 8)
+            openButton.tag = indexPath.row
+            openButton.addTarget(self, action: #selector(openSMBDirectoryFromAccessory(_:)), for: .touchUpInside)
+            openButton.isEnabled = !isApplyingSMBFolder
+            cell.accessoryView = openButton
+            cell.selectionStyle = .default
         } else {
+            cell.imageView?.image = nil
             cell.textLabel?.text = ""
             cell.detailTextLabel?.text = nil
-            cell.accessoryType = .none
+            cell.accessoryView = nil
+            cell.selectionStyle = .none
         }
+        cell.accessoryType = .none
         cell.backgroundColor = .white
         cell.textLabel?.textColor = settingsPrimaryText
         cell.detailTextLabel?.textColor = settingsSecondaryText
@@ -2077,6 +2475,27 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
               let child = smbCurrentDirectory?.children[indexPath.row] else {
             return
         }
+        if selectedSMBDirectories[child.path] == nil {
+            selectedSMBDirectories[child.path] = child
+        } else {
+            selectedSMBDirectories.removeValue(forKey: child.path)
+        }
+        tableView.reloadRows(at: [indexPath], with: .automatic)
+        updateSMBPathLabel()
+        statusLabel.text = selectedSMBDirectories.isEmpty ? "No folders selected. Load will use the current folder." : "\(selectedSMBDirectories.count) SMB folder(s) selected."
+    }
+
+    @objc private func openSMBDirectoryFromAccessory(_ sender: UIButton) {
+        guard !isApplyingSMBFolder else { return }
+        let row = sender.tag
+        guard let children = smbCurrentDirectory?.children,
+              children.indices.contains(row) else {
+            return
+        }
+        openSMBDirectory(children[row])
+    }
+
+    private func openSMBDirectory(_ child: SMBDirectory) {
         guard let connection = smbConnection else { return }
         statusLabel.text = "Loading SMB folder..."
         smbLoader.loadDirectory(path: child.path, displayPath: child.displayPath, connection: connection) { [weak self] result in
@@ -2088,7 +2507,7 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
                     self.smbCurrentDirectory = loadedDirectory
                     self.smbDirectoryTableView.reloadData()
                     self.updateSMBPathLabel()
-                    self.statusLabel.text = "Select a folder, then apply it for playback."
+                    self.statusLabel.text = "Tap folders to select; tap Open to browse."
                 case .failure(let error):
                     self.statusLabel.text = error.localizedDescription
                 }
@@ -2200,7 +2619,7 @@ private enum SMBError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .invalidURL:
-            return "Enter an SMB URL like smb://server/share/folder."
+            return "Enter a valid SMB server, port, and Share Name."
         case .noPhotos(let folder):
             return "No supported photo files were found in \(folder)."
         }
@@ -2247,13 +2666,20 @@ private final class SMBPhotoLoader {
     }
 
     func loadPhotos(in directory: SMBDirectory, connection: SMBConnection, completion: @escaping (Result<[FramePhoto], Error>) -> Void) {
+        loadPhotos(in: [directory], connection: connection, completion: completion)
+    }
+
+    func loadPhotos(in directories: [SMBDirectory], connection: SMBConnection, completion: @escaping (Result<[FramePhoto], Error>) -> Void) {
         queue.async {
             do {
-                let photos = try self.photoURLsRecursively(in: directory, client: connection.client)
+                let photos = try directories.flatMap { directory in
+                    try self.photoURLsRecursively(in: directory, client: connection.client)
+                }
                     .map { FramePhoto(title: $0.lastPathComponent, image: nil, remoteURL: $0) }
                     .sorted { $0.title.localizedStandardCompare($1.title) == .orderedAscending }
                 guard !photos.isEmpty else {
-                    throw SMBError.noPhotos(directory.displayPath)
+                    let displayPath = directories.count == 1 ? directories[0].displayPath : "\(directories.count) selected folders"
+                    throw SMBError.noPhotos(displayPath)
                 }
                 completion(.success(photos))
             } catch {
@@ -2277,6 +2703,7 @@ private final class SMBPhotoLoader {
         let files = try client.contentsOfDirectory(atPath: path)
         let children = files
             .filter { $0.directory }
+            .filter { $0.name.caseInsensitiveCompare("#recycle") != .orderedSame }
             .map { file -> SMBDirectory in
                 let childDisplayPath = displayPath.appendingPathComponentForDisplay(file.name)
                 return SMBDirectory(
