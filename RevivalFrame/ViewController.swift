@@ -48,6 +48,8 @@ private enum PlaybackOrder: Int {
 }
 
 final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecognizerDelegate, UITableViewDataSource, UITableViewDelegate, URLSessionDownloadDelegate {
+    private let blurredBackgroundImageView = UIImageView()
+    private let blurredBackgroundOverlay = UIVisualEffectView(effect: UIBlurEffect(style: .dark))
     private let imageView = UIImageView()
     private let topPanel = UIVisualEffectView(effect: UIBlurEffect(style: .dark))
     private let titleLabel = UILabel()
@@ -172,6 +174,10 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
         return UIColor(red: 0, green: 0.48, blue: 1, alpha: 1)
     }
 
+    private var settingsPlaceholderText: UIColor {
+        return UIColor(red: 0.58, green: 0.58, blue: 0.61, alpha: 1)
+    }
+
     private enum Preferences {
         static let sourceType = "sourceType"
         static let immichLink = "immichLink"
@@ -248,10 +254,20 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
     private func buildInterface() {
         view.backgroundColor = .black
 
+        blurredBackgroundImageView.translatesAutoresizingMaskIntoConstraints = false
+        blurredBackgroundImageView.contentMode = .scaleAspectFill
+        blurredBackgroundImageView.clipsToBounds = true
+        blurredBackgroundImageView.backgroundColor = .black
+        view.addSubview(blurredBackgroundImageView)
+
+        blurredBackgroundOverlay.translatesAutoresizingMaskIntoConstraints = false
+        blurredBackgroundOverlay.alpha = 0.92
+        view.addSubview(blurredBackgroundOverlay)
+
         imageView.translatesAutoresizingMaskIntoConstraints = false
         imageView.contentMode = .scaleAspectFit
         imageView.clipsToBounds = true
-        imageView.backgroundColor = .black
+        imageView.backgroundColor = .clear
         view.addSubview(imageView)
 
         let tap = UITapGestureRecognizer(target: self, action: #selector(togglePanels))
@@ -285,6 +301,16 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
         buildSettingsPanel()
 
         NSLayoutConstraint.activate([
+            blurredBackgroundImageView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            blurredBackgroundImageView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            blurredBackgroundImageView.topAnchor.constraint(equalTo: view.topAnchor),
+            blurredBackgroundImageView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+
+            blurredBackgroundOverlay.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            blurredBackgroundOverlay.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            blurredBackgroundOverlay.topAnchor.constraint(equalTo: view.topAnchor),
+            blurredBackgroundOverlay.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+
             imageView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             imageView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             imageView.topAnchor.constraint(equalTo: view.topAnchor),
@@ -391,11 +417,14 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
     }
 
     private func buildSettingsPanel() {
+        forceLightAppearance(settingsPanel)
+        forceLightAppearance(settingsPanel.contentView)
         settingsPanel.translatesAutoresizingMaskIntoConstraints = false
         settingsPanel.layer.cornerRadius = 12
         settingsPanel.clipsToBounds = true
         settingsPanel.isHidden = true
         settingsPanel.alpha = 0
+        settingsPanel.backgroundColor = settingsGroupedBackground
         settingsPanel.contentView.backgroundColor = settingsGroupedBackground
         view.addSubview(settingsPanel)
 
@@ -412,11 +441,11 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
 
         settingsTabs.selectedSegmentIndex = 0
         settingsTabs.addTarget(self, action: #selector(settingsTabChanged), for: .valueChanged)
-        settingsTabs.tintColor = settingsBlue
-        settingsTabs.backgroundColor = .white
+        configureSettingsSegmentedControl(settingsTabs)
 
         settingsContent.translatesAutoresizingMaskIntoConstraints = false
         settingsContent.backgroundColor = settingsGroupedBackground
+        forceLightAppearance(settingsContent)
 
         statusLabel.font = UIFont.systemFont(ofSize: 12, weight: .regular)
         statusLabel.textColor = settingsSecondaryText
@@ -471,6 +500,7 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
 
     private func makeSettingsLabel(_ text: String) -> UILabel {
         let label = UILabel()
+        forceLightAppearance(label)
         label.text = text
         label.font = UIFont.systemFont(ofSize: 13, weight: .regular)
         label.textColor = settingsSecondaryText
@@ -480,6 +510,7 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
 
     private func makeSettingsTitleLabel(_ text: String) -> UILabel {
         let label = UILabel()
+        forceLightAppearance(label)
         label.text = text.uppercased()
         label.font = UIFont.systemFont(ofSize: 12, weight: .regular)
         label.textColor = settingsSecondaryText
@@ -496,6 +527,7 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
         stack.translatesAutoresizingMaskIntoConstraints = false
 
         let container = UIView()
+        forceLightAppearance(container)
         container.backgroundColor = .white
         container.layer.cornerRadius = 8
         container.layer.borderWidth = 0.5
@@ -533,6 +565,7 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
 
     private func makeSettingsPlainButton(title: String, action: Selector, weight: UIFont.Weight = .regular) -> UIButton {
         let button = UIButton(type: .system)
+        forceLightAppearance(button)
         button.setTitle(title, for: .normal)
         button.addTarget(self, action: action, for: .touchUpInside)
         button.setTitleColor(settingsBlue, for: .normal)
@@ -541,6 +574,29 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
         button.contentEdgeInsets = UIEdgeInsets(top: 6, left: 6, bottom: 6, right: 6)
         button.backgroundColor = .clear
         return button
+    }
+
+    private func forceLightAppearance(_ view: UIView) {
+        if #available(iOS 13.0, *) {
+            view.overrideUserInterfaceStyle = .light
+        }
+    }
+
+    private func configureSettingsSegmentedControl(_ control: UISegmentedControl) {
+        forceLightAppearance(control)
+        control.tintColor = settingsBlue
+        control.backgroundColor = .white
+        control.setTitleTextAttributes([
+            .foregroundColor: settingsBlue,
+            .font: UIFont.systemFont(ofSize: 15, weight: .regular)
+        ], for: .normal)
+        control.setTitleTextAttributes([
+            .foregroundColor: UIColor.white,
+            .font: UIFont.systemFont(ofSize: 15, weight: .regular)
+        ], for: .selected)
+        if #available(iOS 13.0, *) {
+            control.selectedSegmentTintColor = settingsBlue
+        }
     }
 
     private func makeSettingsButton(title: String, action: Selector) -> UIButton {
@@ -560,11 +616,17 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
     }
 
     private func configureSMBTextField(_ field: UITextField, placeholder: String, secure: Bool = false) {
+        forceLightAppearance(field)
         field.font = UIFont.systemFont(ofSize: 16)
         field.textColor = settingsPrimaryText
         field.backgroundColor = .white
         field.borderStyle = .roundedRect
         field.placeholder = placeholder
+        field.attributedPlaceholder = NSAttributedString(string: placeholder, attributes: [
+            .foregroundColor: settingsPlaceholderText
+        ])
+        field.tintColor = settingsBlue
+        field.keyboardAppearance = .light
         field.autocorrectionType = .no
         field.autocapitalizationType = .none
         field.spellCheckingType = .no
@@ -610,6 +672,7 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
     }
 
     private func showImmichSettings() {
+        forceLightAppearance(immichTextView)
         immichTextView.delegate = self
         immichTextView.font = UIFont.systemFont(ofSize: 16)
         immichTextView.textColor = settingsPrimaryText
@@ -621,6 +684,8 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
         immichTextView.autocorrectionType = .no
         immichTextView.autocapitalizationType = .none
         immichTextView.keyboardType = .URL
+        immichTextView.keyboardAppearance = .light
+        immichTextView.tintColor = settingsBlue
         immichTextView.text = UserDefaults.standard.string(forKey: Preferences.immichLink) ?? immichTextView.text
         configureSMBTextField(immichPasswordField, placeholder: "Shared album password", secure: true)
 
@@ -672,6 +737,7 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
         smbPathLabel.numberOfLines = 2
         updateSMBPathLabel()
 
+        forceLightAppearance(smbDirectoryTableView)
         smbDirectoryTableView.dataSource = self
         smbDirectoryTableView.delegate = self
         smbDirectoryTableView.backgroundColor = .white
@@ -850,14 +916,12 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
         transitionControl.selectedSegmentIndex = transitionMode.rawValue
         transitionControl.removeTarget(nil, action: nil, for: .valueChanged)
         transitionControl.addTarget(self, action: #selector(transitionChanged), for: .valueChanged)
-        transitionControl.tintColor = settingsBlue
-        transitionControl.backgroundColor = .white
+        configureSettingsSegmentedControl(transitionControl)
 
         orderControl.selectedSegmentIndex = playbackOrder.rawValue
         orderControl.removeTarget(nil, action: nil, for: .valueChanged)
         orderControl.addTarget(self, action: #selector(orderChanged), for: .valueChanged)
-        orderControl.tintColor = settingsBlue
-        orderControl.backgroundColor = .white
+        configureSettingsSegmentedControl(orderControl)
 
         intervalSlider.minimumValue = 5
         intervalSlider.maximumValue = 60
@@ -882,8 +946,7 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
         cacheSizeControl.selectedSegmentIndex = cacheSizeOptionsMB.firstIndex(of: cacheSizeMB) ?? 1
         cacheSizeControl.removeTarget(nil, action: nil, for: .valueChanged)
         cacheSizeControl.addTarget(self, action: #selector(cacheSizeChanged), for: .valueChanged)
-        cacheSizeControl.tintColor = settingsBlue
-        cacheSizeControl.backgroundColor = .white
+        configureSettingsSegmentedControl(cacheSizeControl)
 
         cacheStatusLabel.font = UIFont.systemFont(ofSize: 12, weight: .regular)
         cacheStatusLabel.textColor = settingsSecondaryText
@@ -1651,10 +1714,12 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
 
     private func display(image: UIImage, animated: Bool, completion: (() -> Void)? = nil) {
         imageView.layer.removeAllAnimations()
+        blurredBackgroundImageView.layer.removeAllAnimations()
         imageView.transform = .identity
         imageView.contentMode = transitionMode == .kenBurns ? .scaleAspectFill : .scaleAspectFit
 
         guard animated else {
+            updateBlurredBackground(with: image, animated: false)
             imageView.image = image
             if transitionMode == .kenBurns {
                 startKenBurnsAnimation()
@@ -1663,6 +1728,7 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
             return
         }
 
+        updateBlurredBackground(with: image, animated: true)
         switch transitionMode {
         case .fade, .kenBurns:
             UIView.transition(with: imageView, duration: 1.5, options: [.transitionCrossDissolve, .allowUserInteraction]) {
@@ -1719,6 +1785,17 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
         }
     }
 
+    private func updateBlurredBackground(with image: UIImage, animated: Bool) {
+        blurredBackgroundImageView.transform = CGAffineTransform(scaleX: 1.08, y: 1.08)
+        guard animated else {
+            blurredBackgroundImageView.image = image
+            return
+        }
+        UIView.transition(with: blurredBackgroundImageView, duration: 1.2, options: [.transitionCrossDissolve, .allowUserInteraction]) {
+            self.blurredBackgroundImageView.image = image
+        }
+    }
+
     private func startKenBurnsAnimation() {
         imageView.layer.removeAllAnimations()
         imageView.contentMode = .scaleAspectFill
@@ -1770,7 +1847,7 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
         let nextImageView = UIImageView(frame: imageView.frame)
         nextImageView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
         nextImageView.contentMode = .scaleAspectFit
-        nextImageView.backgroundColor = .black
+        nextImageView.backgroundColor = .clear
         nextImageView.image = image
         view.insertSubview(nextImageView, aboveSubview: imageView)
         return nextImageView
@@ -2438,33 +2515,37 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
 
     func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
         let identifier = "SMBDirectoryCell"
-        let cell = tableView.dequeueReusableCell(withIdentifier: identifier) ?? UITableViewCell(style: .subtitle, reuseIdentifier: identifier)
+        let cell = (tableView.dequeueReusableCell(withIdentifier: identifier) as? SMBDirectoryCell) ?? SMBDirectoryCell(reuseIdentifier: identifier)
         if let child = smbCurrentDirectory?.children[indexPath.row] {
             let selected = selectedSMBDirectories[child.path] != nil
-            cell.imageView?.image = smbSelectionIndicatorImage(selected: selected)
-            cell.textLabel?.text = child.name
-            cell.detailTextLabel?.text = child.displayPath
-            let openButton = UIButton(type: .system)
-            openButton.setTitle("Open", for: .normal)
-            openButton.titleLabel?.font = UIFont.systemFont(ofSize: 15, weight: .regular)
-            openButton.setTitleColor(settingsBlue, for: .normal)
-            openButton.contentEdgeInsets = UIEdgeInsets(top: 6, left: 8, bottom: 6, right: 8)
-            openButton.tag = indexPath.row
-            openButton.addTarget(self, action: #selector(openSMBDirectoryFromAccessory(_:)), for: .touchUpInside)
-            openButton.isEnabled = !isApplyingSMBFolder
-            cell.accessoryView = openButton
+            cell.configure(
+                name: child.name,
+                path: child.displayPath,
+                selectedImage: smbSelectionIndicatorImage(selected: selected),
+                row: indexPath.row,
+                target: self,
+                toggleAction: #selector(toggleSMBDirectorySelectionFromButton(_:)),
+                enabled: !isApplyingSMBFolder
+            )
             cell.selectionStyle = .default
         } else {
-            cell.imageView?.image = nil
-            cell.textLabel?.text = ""
-            cell.detailTextLabel?.text = nil
-            cell.accessoryView = nil
+            cell.configure(
+                name: "",
+                path: "",
+                selectedImage: UIImage(),
+                row: indexPath.row,
+                target: self,
+                toggleAction: #selector(toggleSMBDirectorySelectionFromButton(_:)),
+                enabled: false
+            )
             cell.selectionStyle = .none
         }
-        cell.accessoryType = .none
+        cell.accessoryType = .disclosureIndicator
+        forceLightAppearance(cell)
+        forceLightAppearance(cell.contentView)
         cell.backgroundColor = .white
-        cell.textLabel?.textColor = settingsPrimaryText
-        cell.detailTextLabel?.textColor = settingsSecondaryText
+        cell.contentView.backgroundColor = .white
+        cell.applyTextColors(primary: settingsPrimaryText, secondary: settingsSecondaryText)
         return cell
     }
 
@@ -2475,12 +2556,26 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
               let child = smbCurrentDirectory?.children[indexPath.row] else {
             return
         }
+        openSMBDirectory(child)
+    }
+
+    @objc private func toggleSMBDirectorySelectionFromButton(_ sender: UIButton) {
+        guard !isApplyingSMBFolder else { return }
+        toggleSMBDirectorySelection(at: sender.tag)
+    }
+
+    private func toggleSMBDirectorySelection(at row: Int) {
+        guard let children = smbCurrentDirectory?.children,
+              children.indices.contains(row) else {
+            return
+        }
+        let child = children[row]
         if selectedSMBDirectories[child.path] == nil {
             selectedSMBDirectories[child.path] = child
         } else {
             selectedSMBDirectories.removeValue(forKey: child.path)
         }
-        tableView.reloadRows(at: [indexPath], with: .automatic)
+        smbDirectoryTableView.reloadRows(at: [IndexPath(row: row, section: 0)], with: .automatic)
         updateSMBPathLabel()
         statusLabel.text = selectedSMBDirectories.isEmpty ? "No folders selected. Load will use the current folder." : "\(selectedSMBDirectories.count) SMB folder(s) selected."
     }
@@ -2507,12 +2602,75 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
                     self.smbCurrentDirectory = loadedDirectory
                     self.smbDirectoryTableView.reloadData()
                     self.updateSMBPathLabel()
-                    self.statusLabel.text = "Tap folders to select; tap Open to browse."
+                    self.statusLabel.text = "Tap a folder to browse. Tap the circle to select it."
                 case .failure(let error):
                     self.statusLabel.text = error.localizedDescription
                 }
             }
         }
+    }
+}
+
+private final class SMBDirectoryCell: UITableViewCell {
+    private let selectButton = UIButton(type: .custom)
+    private let nameLabel = UILabel()
+    private let pathLabel = UILabel()
+    private let labelsStack = UIStackView()
+
+    init(reuseIdentifier: String?) {
+        super.init(style: .default, reuseIdentifier: reuseIdentifier)
+        buildInterface()
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        buildInterface()
+    }
+
+    private func buildInterface() {
+        selectButton.translatesAutoresizingMaskIntoConstraints = false
+        selectButton.contentMode = .center
+        contentView.addSubview(selectButton)
+
+        nameLabel.font = UIFont.systemFont(ofSize: 17, weight: .regular)
+        nameLabel.numberOfLines = 1
+        pathLabel.font = UIFont.systemFont(ofSize: 13, weight: .regular)
+        pathLabel.numberOfLines = 1
+
+        labelsStack.axis = .vertical
+        labelsStack.spacing = 2
+        labelsStack.translatesAutoresizingMaskIntoConstraints = false
+        labelsStack.addArrangedSubview(nameLabel)
+        labelsStack.addArrangedSubview(pathLabel)
+        contentView.addSubview(labelsStack)
+
+        NSLayoutConstraint.activate([
+            selectButton.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 12),
+            selectButton.centerYAnchor.constraint(equalTo: contentView.centerYAnchor),
+            selectButton.widthAnchor.constraint(equalToConstant: 32),
+            selectButton.heightAnchor.constraint(equalToConstant: 44),
+
+            labelsStack.leadingAnchor.constraint(equalTo: selectButton.trailingAnchor, constant: 6),
+            labelsStack.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -8),
+            labelsStack.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 8),
+            labelsStack.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -8)
+        ])
+    }
+
+    func configure(name: String, path: String, selectedImage: UIImage, row: Int, target: Any, toggleAction: Selector, enabled: Bool) {
+        nameLabel.text = name
+        pathLabel.text = path
+        selectButton.setImage(selectedImage, for: .normal)
+        selectButton.tag = row
+        selectButton.isEnabled = enabled
+        selectButton.removeTarget(nil, action: nil, for: .touchUpInside)
+        selectButton.addTarget(target, action: toggleAction, for: .touchUpInside)
+        contentView.alpha = enabled ? 1 : 0.5
+    }
+
+    func applyTextColors(primary: UIColor, secondary: UIColor) {
+        nameLabel.textColor = primary
+        pathLabel.textColor = secondary
     }
 }
 
