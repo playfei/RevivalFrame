@@ -1,5 +1,6 @@
 import UIKit
 import ImageIO
+import CoreLocation
 
 private enum PhotoSourceType {
     case presets
@@ -58,8 +59,10 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
     private let playPauseButton = UIButton(type: .system)
     private let summaryLabel = UILabel()
     private let deferredLoadingLabel = UILabel()
+    private let dateTimeOverlayLabel = UILabel()
+    private let exifOverlayLabel = UILabel()
     private let settingsPanel = UIVisualEffectView(effect: UIBlurEffect(style: .extraLight))
-    private let settingsTabs = UISegmentedControl(items: ["Presets", "Immich", "SMB", "Playback"])
+    private let settingsTabs = UISegmentedControl(items: ["Presets", "Immich", "SMB", "Playback", "Display", "Privacy"])
     private let settingsContent = UIView()
     private let statusLabel = UILabel()
     private let immichTextView = UITextView()
@@ -79,6 +82,9 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
     private let transitionControl = UISegmentedControl(items: TransitionMode.all.map { $0.title })
     private let orderControl = UISegmentedControl(items: [PlaybackOrder.sequential.title, PlaybackOrder.random.title])
     private let cacheSizeControl = UISegmentedControl(items: ["100 MB", "300 MB", "500 MB"])
+    private let dateTimeSwitch = UISwitch()
+    private let exifSwitch = UISwitch()
+    private let exifLocationSwitch = UISwitch()
     private let cacheStatusLabel = UILabel()
     private let downloadRateLabel = UILabel()
     private let imageCache = NSCache<NSURL, UIImage>()
@@ -101,6 +107,14 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
     private var playbackOrder: PlaybackOrder = .sequential
     private var interval: TimeInterval = 8
     private var cacheSizeMB = 300
+    private var showDateTimeOverlay = false
+    private var showEXIFOverlay = false
+    private var showEXIFLocationOverlay = false
+    private var currentEXIFText: String?
+    private var currentEXIFBaseText: String?
+    private var currentEXIFLocationKey: String?
+    private var exifLocationNames: [String: String] = [:]
+    private let exifGeocoder = CLGeocoder()
     private var currentImageRequestID = UUID()
     private var currentPhotoReadyForTiming = false
     private var waitingForPreparedPhoto = false
@@ -117,6 +131,7 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
     private var lastDownloadRateUpdate: TimeInterval = 0
     private var downloadRateTimer: Timer?
     private var deferredLoadingTimer: Timer?
+    private var dateTimeTimer: Timer?
     private var deferredLoadingStep = 0
     private var randomIndexQueue: [Int] = []
     private var randomPlaybackHistory: [Int] = []
@@ -190,6 +205,14 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
         static let interval = "interval"
         static let cacheSizeMB = "cacheSizeMB"
         static let settingsTab = "settingsTab"
+        static let showDateTimeOverlay = "showDateTimeOverlay"
+        static let showEXIFOverlay = "showEXIFOverlay"
+        static let showEXIFLocationOverlay = "showEXIFLocationOverlay"
+    }
+
+    private struct EXIFMetadata {
+        let text: String?
+        let coordinate: CLLocationCoordinate2D?
     }
 
     private enum FeedbackIcon {
@@ -230,7 +253,9 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
         panelsAutoHideTimer?.invalidate()
         smbApplyTimeoutTimer?.invalidate()
         downloadRateTimer?.invalidate()
+        dateTimeTimer?.invalidate()
         downloadRateTimer = nil
+        dateTimeTimer = nil
         stopDeferredLoadingIndicator()
     }
 
@@ -298,6 +323,7 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
         buildTopPanel()
         buildBottomPanel()
         buildDeferredLoadingLabel()
+        buildDisplayOverlays()
         buildSettingsPanel()
 
         NSLayoutConstraint.activate([
@@ -333,6 +359,45 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
             deferredLoadingLabel.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor, constant: 18),
             deferredLoadingLabel.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -18)
         ])
+    }
+
+    private func buildDisplayOverlays() {
+        dateTimeOverlayLabel.translatesAutoresizingMaskIntoConstraints = false
+        dateTimeOverlayLabel.font = UIFont.systemFont(ofSize: 34, weight: .light)
+        dateTimeOverlayLabel.textColor = UIColor(white: 1, alpha: 0.92)
+        dateTimeOverlayLabel.textAlignment = .center
+        dateTimeOverlayLabel.numberOfLines = 2
+        dateTimeOverlayLabel.shadowColor = UIColor(white: 0, alpha: 0.55)
+        dateTimeOverlayLabel.shadowOffset = CGSize(width: 0, height: 1)
+        dateTimeOverlayLabel.alpha = 0
+        dateTimeOverlayLabel.isHidden = true
+        view.addSubview(dateTimeOverlayLabel)
+
+        exifOverlayLabel.translatesAutoresizingMaskIntoConstraints = false
+        exifOverlayLabel.font = UIFont.monospacedDigitSystemFont(ofSize: 12, weight: .regular)
+        exifOverlayLabel.textColor = UIColor(white: 1, alpha: 0.82)
+        exifOverlayLabel.textAlignment = .right
+        exifOverlayLabel.numberOfLines = 5
+        exifOverlayLabel.shadowColor = UIColor(white: 0, alpha: 0.7)
+        exifOverlayLabel.shadowOffset = CGSize(width: 0, height: 1)
+        exifOverlayLabel.alpha = 0
+        exifOverlayLabel.isHidden = true
+        view.addSubview(exifOverlayLabel)
+
+        NSLayoutConstraint.activate([
+            dateTimeOverlayLabel.centerXAnchor.constraint(equalTo: view.safeAreaLayoutGuide.centerXAnchor),
+            dateTimeOverlayLabel.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 72),
+            dateTimeOverlayLabel.leadingAnchor.constraint(greaterThanOrEqualTo: view.safeAreaLayoutGuide.leadingAnchor, constant: 24),
+            dateTimeOverlayLabel.trailingAnchor.constraint(lessThanOrEqualTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -24),
+            dateTimeOverlayLabel.heightAnchor.constraint(greaterThanOrEqualToConstant: 120),
+
+            exifOverlayLabel.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -18),
+            exifOverlayLabel.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -18),
+            exifOverlayLabel.leadingAnchor.constraint(greaterThanOrEqualTo: view.safeAreaLayoutGuide.leadingAnchor, constant: 24),
+            exifOverlayLabel.widthAnchor.constraint(lessThanOrEqualToConstant: 420)
+        ])
+        updateDateTimeOverlayText()
+        updateDisplayOverlaysVisibility(animated: false)
     }
 
     private func buildTopPanel() {
@@ -588,11 +653,11 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
         control.backgroundColor = .white
         control.setTitleTextAttributes([
             .foregroundColor: settingsBlue,
-            .font: UIFont.systemFont(ofSize: 15, weight: .regular)
+            .font: UIFont.systemFont(ofSize: 14, weight: .regular)
         ], for: .normal)
         control.setTitleTextAttributes([
             .foregroundColor: UIColor.white,
-            .font: UIFont.systemFont(ofSize: 15, weight: .regular)
+            .font: UIFont.systemFont(ofSize: 14, weight: .regular)
         ], for: .selected)
         if #available(iOS 13.0, *) {
             control.selectedSegmentTintColor = settingsBlue
@@ -978,6 +1043,96 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
         replaceSettingsContent(with: stack)
     }
 
+    private func showDisplaySettings() {
+        dateTimeSwitch.isOn = showDateTimeOverlay
+        dateTimeSwitch.removeTarget(nil, action: nil, for: .valueChanged)
+        dateTimeSwitch.addTarget(self, action: #selector(displayOverlaySwitchChanged), for: .valueChanged)
+        dateTimeSwitch.onTintColor = settingsBlue
+        forceLightAppearance(dateTimeSwitch)
+
+        exifSwitch.isOn = showEXIFOverlay
+        exifSwitch.removeTarget(nil, action: nil, for: .valueChanged)
+        exifSwitch.addTarget(self, action: #selector(displayOverlaySwitchChanged), for: .valueChanged)
+        exifSwitch.onTintColor = settingsBlue
+        forceLightAppearance(exifSwitch)
+
+        exifLocationSwitch.isOn = showEXIFLocationOverlay
+        exifLocationSwitch.removeTarget(nil, action: nil, for: .valueChanged)
+        exifLocationSwitch.addTarget(self, action: #selector(displayOverlaySwitchChanged), for: .valueChanged)
+        exifLocationSwitch.onTintColor = settingsBlue
+        forceLightAppearance(exifLocationSwitch)
+
+        let stack = UIStackView(arrangedSubviews: [
+            makeSettingsTitleLabel("Display"),
+            makeSettingsGroup([
+                makeSettingsSwitchRow(title: "Date and Time", detail: "Show the current date and time during full-screen playback.", control: dateTimeSwitch),
+                makeSettingsSwitchRow(title: "EXIF Info", detail: "Show camera model, capture time, aperture, shutter, ISO, focal length, and GPS when available.", control: exifSwitch),
+                makeSettingsSwitchRow(title: "Location Name", detail: "Resolve photo GPS coordinates to city, region, and country when available.", control: exifLocationSwitch)
+            ])
+        ])
+        stack.axis = .vertical
+        stack.spacing = 8
+        replaceSettingsContent(with: stack)
+    }
+
+    private func showPrivacySettings() {
+        let licensesButton = makeSettingsButton(title: "License & Open Source Notices", action: #selector(showLicenses))
+        let stack = UIStackView(arrangedSubviews: [
+            makeSettingsTitleLabel("Privacy"),
+            makeSettingsGroup([
+                makeSettingsLabel("Privacy Policy URL"),
+                makeSettingsLabel("https://www.revivalframe.com/privacy"),
+                makeSettingsLabel("RevivalFrame stores photo source settings on this iPad so the frame can resume playback after launch."),
+                makeSettingsLabel("Immich shared links and SMB credentials are used only to load the photo sources you configure."),
+                makeSettingsLabel("When Location Name is enabled, photo GPS coordinates may be sent to Apple's reverse geocoding service to resolve city, region, and country names."),
+                makeSettingsLabel("RevivalFrame does not run its own cloud service and does not upload your photos to a RevivalFrame server."),
+                licensesButton
+            ])
+        ])
+        stack.axis = .vertical
+        stack.spacing = 8
+        replaceSettingsContent(with: stack)
+    }
+
+    private func makeSettingsSwitchRow(title: String, detail: String, control: UISwitch) -> UIView {
+        let titleLabel = UILabel()
+        titleLabel.font = UIFont.systemFont(ofSize: 16, weight: .regular)
+        titleLabel.textColor = settingsPrimaryText
+        titleLabel.text = title
+        forceLightAppearance(titleLabel)
+
+        let detailLabel = UILabel()
+        detailLabel.font = UIFont.systemFont(ofSize: 12, weight: .regular)
+        detailLabel.textColor = settingsSecondaryText
+        detailLabel.numberOfLines = 2
+        detailLabel.text = detail
+        forceLightAppearance(detailLabel)
+
+        let labelStack = UIStackView(arrangedSubviews: [titleLabel, detailLabel])
+        labelStack.axis = .vertical
+        labelStack.spacing = 2
+
+        let row = UIStackView(arrangedSubviews: [labelStack, control])
+        row.axis = .horizontal
+        row.alignment = .center
+        row.spacing = 12
+        row.translatesAutoresizingMaskIntoConstraints = false
+        labelStack.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        control.setContentHuggingPriority(.required, for: .horizontal)
+
+        let wrapper = UIView()
+        wrapper.backgroundColor = .white
+        forceLightAppearance(wrapper)
+        wrapper.addSubview(row)
+        NSLayoutConstraint.activate([
+            row.leadingAnchor.constraint(equalTo: wrapper.leadingAnchor),
+            row.trailingAnchor.constraint(equalTo: wrapper.trailingAnchor),
+            row.topAnchor.constraint(equalTo: wrapper.topAnchor, constant: 6),
+            row.bottomAnchor.constraint(equalTo: wrapper.bottomAnchor, constant: -6)
+        ])
+        return wrapper
+    }
+
     private func loadPreferences() {
         let defaults = UserDefaults.standard
         if defaults.object(forKey: Preferences.transitionMode) != nil {
@@ -1001,6 +1156,15 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
             } else if savedSource == PhotoSourceType.smb.title {
                 sourceType = .smb
             }
+        }
+        if defaults.object(forKey: Preferences.showDateTimeOverlay) != nil {
+            showDateTimeOverlay = defaults.bool(forKey: Preferences.showDateTimeOverlay)
+        }
+        if defaults.object(forKey: Preferences.showEXIFOverlay) != nil {
+            showEXIFOverlay = defaults.bool(forKey: Preferences.showEXIFOverlay)
+        }
+        if defaults.object(forKey: Preferences.showEXIFLocationOverlay) != nil {
+            showEXIFLocationOverlay = defaults.bool(forKey: Preferences.showEXIFLocationOverlay)
         }
     }
 
@@ -1031,7 +1195,9 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
         case 0: showPresetsSettings()
         case 1: showImmichSettings()
         case 2: showSMBSettings()
-        default: showPlaybackSettings()
+        case 3: showPlaybackSettings()
+        case 4: showDisplaySettings()
+        default: showPrivacySettings()
         }
         updateSettingsLayout()
     }
@@ -1182,6 +1348,7 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
         guard photos.indices.contains(index) else { return }
         let photo = photos[index]
         detailLabel.text = "\(sourceType.title) | \(index + 1) of \(photos.count) | \(photo.title)"
+        updateEXIFOverlay(for: photo)
     }
 
     private func startDeferredLoadingIndicator() {
@@ -1553,6 +1720,9 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
         cachedFileURLs[url] = fileURL
         cachedFileCosts[url] = cost
         deferredPrefetchURLs.remove(url)
+        if photos.indices.contains(currentIndex), photos[currentIndex].remoteURL == url {
+            updateEXIFOverlay(for: photos[currentIndex])
+        }
         updateCacheStatus()
     }
 
@@ -1605,6 +1775,13 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
         }
         cachedFileCosts.removeValue(forKey: url)
         deferredPrefetchURLs.removeAll()
+        if photos.indices.contains(currentIndex), photos[currentIndex].remoteURL == url {
+            currentEXIFText = nil
+            currentEXIFBaseText = nil
+            currentEXIFLocationKey = nil
+            exifOverlayLabel.text = nil
+            updateDisplayOverlaysVisibility(animated: false)
+        }
         updateCacheStatus()
     }
 
@@ -1613,8 +1790,13 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
         cachedFileCosts.removeAll()
         cachedFileURLs.removeAll()
         deferredPrefetchURLs.removeAll()
+        currentEXIFText = nil
+        currentEXIFBaseText = nil
+        currentEXIFLocationKey = nil
+        exifOverlayLabel.text = nil
         try? FileManager.default.removeItem(at: temporaryCacheDirectory)
         prepareTemporaryCacheDirectory()
+        updateDisplayOverlaysVisibility(animated: false)
         updateCacheStatus()
     }
 
@@ -1917,6 +2099,276 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
         intervalValueLabel.text = "\(Int(interval))s"
     }
 
+    private func updateDateTimeOverlayText() {
+        let date = Date()
+        let dateFormatter = DateFormatter()
+        dateFormatter.locale = Locale.current
+        dateFormatter.setLocalizedDateFormatFromTemplate("EEEEMMMd")
+
+        let timeFormatter = DateFormatter()
+        timeFormatter.locale = Locale.current
+        timeFormatter.dateStyle = .none
+        timeFormatter.timeStyle = .short
+        let timeText = timeFormatter.string(from: date)
+        let dateText = dateFormatter.string(from: date)
+        let text = "\(timeText)\n\(dateText)"
+        let attributed = NSMutableAttributedString(string: text)
+        let fullRange = NSRange(location: 0, length: attributed.length)
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.alignment = .center
+        paragraph.lineSpacing = 2
+        attributed.addAttributes([
+            .font: UIFont.systemFont(ofSize: 32, weight: .light),
+            .foregroundColor: UIColor(white: 1, alpha: 0.92),
+            .paragraphStyle: paragraph
+        ], range: fullRange)
+
+        let timeRange = (text as NSString).range(of: timeText)
+        let dateRange = (text as NSString).range(of: dateText)
+        attributed.addAttribute(.font, value: UIFont.systemFont(ofSize: 64, weight: .thin), range: timeRange)
+        attributed.addAttribute(.font, value: UIFont.systemFont(ofSize: 26, weight: .regular), range: dateRange)
+        dateTimeOverlayLabel.attributedText = attributed
+    }
+
+    private func updateEXIFOverlay(for photo: FramePhoto) {
+        guard let remoteURL = photo.remoteURL,
+              let fileURL = cachedFileURLs[remoteURL] else {
+            currentEXIFText = nil
+            currentEXIFBaseText = nil
+            currentEXIFLocationKey = nil
+            exifOverlayLabel.text = nil
+            updateDisplayOverlaysVisibility(animated: false)
+            return
+        }
+        let metadata = exifMetadata(from: fileURL)
+        currentEXIFBaseText = metadata.text
+        currentEXIFLocationKey = metadata.coordinate.map { exifLocationKey(for: $0) }
+        rebuildEXIFOverlayText(locationName: currentEXIFLocationKey.flatMap { exifLocationNames[$0] })
+        if showEXIFLocationOverlay, let coordinate = metadata.coordinate {
+            resolveEXIFLocationIfNeeded(for: coordinate)
+        }
+        updateDisplayOverlaysVisibility(animated: false)
+    }
+
+    private func exifMetadata(from fileURL: URL) -> EXIFMetadata {
+        let options = [kCGImageSourceShouldCache: false] as CFDictionary
+        guard let source = CGImageSourceCreateWithURL(fileURL as CFURL, options),
+              let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, options) as? [String: Any] else {
+            return EXIFMetadata(text: nil, coordinate: nil)
+        }
+
+        let exif = properties[kCGImagePropertyExifDictionary as String] as? [String: Any]
+        let tiff = properties[kCGImagePropertyTIFFDictionary as String] as? [String: Any]
+        let gps = properties[kCGImagePropertyGPSDictionary as String] as? [String: Any]
+
+        var lines: [String] = []
+        if let camera = cameraDescription(from: tiff) {
+            lines.append(camera)
+        }
+        if let taken = exif?[kCGImagePropertyExifDateTimeOriginal as String] as? String {
+            lines.append(taken)
+        }
+
+        let exposureParts = [
+            apertureDescription(from: exif),
+            shutterDescription(from: exif),
+            isoDescription(from: exif),
+            focalLengthDescription(from: exif)
+        ].compactMap { $0 }
+        if !exposureParts.isEmpty {
+            lines.append(exposureParts.joined(separator: "   "))
+        }
+
+        if let gpsText = gpsDescription(from: gps) {
+            lines.append(gpsText)
+        }
+        return EXIFMetadata(
+            text: lines.isEmpty ? nil : lines.joined(separator: "\n"),
+            coordinate: gpsCoordinate(from: gps)
+        )
+    }
+
+    private func rebuildEXIFOverlayText(locationName: String? = nil) {
+        var lines: [String] = []
+        if showEXIFOverlay, let baseText = currentEXIFBaseText, !baseText.isEmpty {
+            lines.append(baseText)
+        }
+        if showEXIFLocationOverlay {
+            if let locationName = locationName, !locationName.isEmpty {
+                lines.append(locationName)
+            } else if currentEXIFLocationKey != nil {
+                lines.append("Location...")
+            }
+        }
+        currentEXIFText = lines.isEmpty ? nil : lines.joined(separator: "\n")
+        exifOverlayLabel.text = currentEXIFText
+    }
+
+    private func cameraDescription(from tiff: [String: Any]?) -> String? {
+        let make = (tiff?[kCGImagePropertyTIFFMake as String] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let model = (tiff?[kCGImagePropertyTIFFModel as String] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let make = make, let model = model, !make.isEmpty, !model.isEmpty {
+            return model.localizedCaseInsensitiveContains(make) ? model : "\(make) \(model)"
+        }
+        return model?.isEmpty == false ? model : nil
+    }
+
+    private func apertureDescription(from exif: [String: Any]?) -> String? {
+        guard let value = numberValue(exif?[kCGImagePropertyExifFNumber as String]), value > 0 else { return nil }
+        return String(format: "f/%.1f", value)
+    }
+
+    private func shutterDescription(from exif: [String: Any]?) -> String? {
+        guard let value = numberValue(exif?[kCGImagePropertyExifExposureTime as String]), value > 0 else { return nil }
+        if value >= 1 {
+            return String(format: "%.1fs", value)
+        }
+        return "1/\(Int(round(1 / value)))s"
+    }
+
+    private func isoDescription(from exif: [String: Any]?) -> String? {
+        if let values = exif?[kCGImagePropertyExifISOSpeedRatings as String] as? [Any],
+           let first = values.first,
+           let iso = numberValue(first) {
+            return "ISO \(Int(round(iso)))"
+        }
+        if let iso = numberValue(exif?[kCGImagePropertyExifISOSpeedRatings as String]) {
+            return "ISO \(Int(round(iso)))"
+        }
+        return nil
+    }
+
+    private func focalLengthDescription(from exif: [String: Any]?) -> String? {
+        guard let value = numberValue(exif?[kCGImagePropertyExifFocalLength as String]), value > 0 else { return nil }
+        return String(format: "%.0fmm", value)
+    }
+
+    private func gpsDescription(from gps: [String: Any]?) -> String? {
+        guard let coordinate = gpsCoordinate(from: gps) else { return nil }
+        return String(format: "GPS %.5f, %.5f", coordinate.latitude, coordinate.longitude)
+    }
+
+    private func gpsCoordinate(from gps: [String: Any]?) -> CLLocationCoordinate2D? {
+        guard let gps = gps,
+              let latitude = numberValue(gps[kCGImagePropertyGPSLatitude as String]),
+              let longitude = numberValue(gps[kCGImagePropertyGPSLongitude as String]) else {
+            return nil
+        }
+        let latitudeRef = (gps[kCGImagePropertyGPSLatitudeRef as String] as? String) ?? "N"
+        let longitudeRef = (gps[kCGImagePropertyGPSLongitudeRef as String] as? String) ?? "E"
+        let signedLatitude = latitudeRef.uppercased() == "S" ? -latitude : latitude
+        let signedLongitude = longitudeRef.uppercased() == "W" ? -longitude : longitude
+        guard CLLocationCoordinate2DIsValid(CLLocationCoordinate2D(latitude: signedLatitude, longitude: signedLongitude)) else {
+            return nil
+        }
+        return CLLocationCoordinate2D(latitude: signedLatitude, longitude: signedLongitude)
+    }
+
+    private func exifLocationKey(for coordinate: CLLocationCoordinate2D) -> String {
+        return String(format: "%.4f,%.4f", coordinate.latitude, coordinate.longitude)
+    }
+
+    private func resolveEXIFLocationIfNeeded(for coordinate: CLLocationCoordinate2D) {
+        let key = exifLocationKey(for: coordinate)
+        if let cachedName = exifLocationNames[key] {
+            rebuildEXIFOverlayText(locationName: cachedName)
+            updateDisplayOverlaysVisibility(animated: false)
+            return
+        }
+
+        exifGeocoder.cancelGeocode()
+        let location = CLLocation(latitude: coordinate.latitude, longitude: coordinate.longitude)
+        exifGeocoder.reverseGeocodeLocation(location) { [weak self] placemarks, error in
+            guard let self = self, self.currentEXIFLocationKey == key else { return }
+            guard error == nil, let place = placemarks?.first else {
+                self.rebuildEXIFOverlayText(locationName: nil)
+                self.updateDisplayOverlaysVisibility(animated: true)
+                return
+            }
+            let name = self.locationDescription(from: place)
+            if let name = name {
+                self.exifLocationNames[key] = name
+            }
+            self.rebuildEXIFOverlayText(locationName: name)
+            self.updateDisplayOverlaysVisibility(animated: true)
+        }
+    }
+
+    private func locationDescription(from placemark: CLPlacemark) -> String? {
+        let parts = [
+            placemark.locality,
+            placemark.administrativeArea,
+            placemark.country
+        ].compactMap { value -> String? in
+            let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed?.isEmpty == false ? trimmed : nil
+        }
+
+        var uniqueParts: [String] = []
+        for part in parts where !uniqueParts.contains(part) {
+            uniqueParts.append(part)
+        }
+        return uniqueParts.isEmpty ? nil : uniqueParts.joined(separator: ", ")
+    }
+
+    private func numberValue(_ value: Any?) -> Double? {
+        if let number = value as? NSNumber {
+            return number.doubleValue
+        }
+        if let double = value as? Double {
+            return double
+        }
+        if let string = value as? String {
+            return Double(string)
+        }
+        return nil
+    }
+
+    private func updateDisplayOverlaysVisibility(animated: Bool) {
+        guard isViewLoaded else { return }
+        let shouldShow = !panelsVisible && !settingsVisible
+        let dateVisible = shouldShow && showDateTimeOverlay
+        let exifVisible = shouldShow && (showEXIFOverlay || showEXIFLocationOverlay) && currentEXIFText?.isEmpty == false
+
+        if dateVisible {
+            updateDateTimeOverlayText()
+            startDateTimeTimerIfNeeded()
+        } else {
+            stopDateTimeTimer()
+        }
+
+        dateTimeOverlayLabel.isHidden = !dateVisible && dateTimeOverlayLabel.alpha == 0
+        exifOverlayLabel.isHidden = !exifVisible && exifOverlayLabel.alpha == 0
+
+        let changes = {
+            self.dateTimeOverlayLabel.alpha = dateVisible ? 1 : 0
+            self.exifOverlayLabel.alpha = exifVisible ? 1 : 0
+        }
+        let completion: (Bool) -> Void = { _ in
+            self.dateTimeOverlayLabel.isHidden = !dateVisible
+            self.exifOverlayLabel.isHidden = !exifVisible
+        }
+
+        if animated {
+            UIView.animate(withDuration: 0.25, animations: changes, completion: completion)
+        } else {
+            changes()
+            completion(true)
+        }
+    }
+
+    private func startDateTimeTimerIfNeeded() {
+        guard dateTimeTimer == nil else { return }
+        dateTimeTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
+            self?.updateDateTimeOverlayText()
+        }
+    }
+
+    private func stopDateTimeTimer() {
+        dateTimeTimer?.invalidate()
+        dateTimeTimer = nil
+    }
+
     private func setSettingsVisible(_ visible: Bool) {
         settingsVisible = visible
         if visible {
@@ -1932,7 +2384,9 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
             self.settingsPanel.alpha = visible ? 1 : 0
         }, completion: { _ in
             self.settingsPanel.isHidden = !visible
+            self.updateDisplayOverlaysVisibility(animated: true)
         })
+        updateDisplayOverlaysVisibility(animated: true)
     }
 
     func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
@@ -2031,6 +2485,7 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
         } else {
             changes()
         }
+        updateDisplayOverlaysVisibility(animated: animated)
 
         if visible && rescheduleAutoHide {
             schedulePanelsAutoHide(reset: true)
@@ -2160,6 +2615,26 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
         view.endEditing(true)
         UserDefaults.standard.set(settingsTabs.selectedSegmentIndex, forKey: Preferences.settingsTab)
         showSelectedSettingsTab()
+    }
+
+    @objc private func showLicenses() {
+        let controller = LicensesViewController()
+        controller.modalPresentationStyle = .formSheet
+        present(controller, animated: true)
+    }
+
+    @objc private func displayOverlaySwitchChanged() {
+        showDateTimeOverlay = dateTimeSwitch.isOn
+        showEXIFOverlay = exifSwitch.isOn
+        showEXIFLocationOverlay = exifLocationSwitch.isOn
+        UserDefaults.standard.set(showDateTimeOverlay, forKey: Preferences.showDateTimeOverlay)
+        UserDefaults.standard.set(showEXIFOverlay, forKey: Preferences.showEXIFOverlay)
+        UserDefaults.standard.set(showEXIFLocationOverlay, forKey: Preferences.showEXIFLocationOverlay)
+        if photos.indices.contains(currentIndex) {
+            updateEXIFOverlay(for: photos[currentIndex])
+        }
+        statusLabel.text = "Display preferences updated."
+        updateDisplayOverlaysVisibility(animated: true)
     }
 
     @objc private func usePresets() {
@@ -2525,6 +3000,7 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
                 row: indexPath.row,
                 target: self,
                 toggleAction: #selector(toggleSMBDirectorySelectionFromButton(_:)),
+                openAction: #selector(openSMBDirectoryFromAccessory(_:)),
                 enabled: !isApplyingSMBFolder
             )
             cell.selectionStyle = .default
@@ -2536,11 +3012,11 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
                 row: indexPath.row,
                 target: self,
                 toggleAction: #selector(toggleSMBDirectorySelectionFromButton(_:)),
+                openAction: #selector(openSMBDirectoryFromAccessory(_:)),
                 enabled: false
             )
             cell.selectionStyle = .none
         }
-        cell.accessoryType = .disclosureIndicator
         forceLightAppearance(cell)
         forceLightAppearance(cell.contentView)
         cell.backgroundColor = .white
@@ -2553,10 +3029,10 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
         tableView.deselectRow(at: indexPath, animated: true)
         guard !isApplyingSMBFolder else { return }
         guard tableView == smbDirectoryTableView,
-              let child = smbCurrentDirectory?.children[indexPath.row] else {
+              smbCurrentDirectory?.children.indices.contains(indexPath.row) == true else {
             return
         }
-        openSMBDirectory(child)
+        toggleSMBDirectorySelection(at: indexPath.row)
     }
 
     @objc private func toggleSMBDirectorySelectionFromButton(_ sender: UIButton) {
@@ -2598,11 +3074,15 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
                 guard let self = self else { return }
                 switch result {
                 case .success(let loadedDirectory):
+                    guard !loadedDirectory.children.isEmpty else {
+                        self.statusLabel.text = "This folder has no subfolders. Select it and tap Load to play its photos."
+                        return
+                    }
                     self.smbDirectoryStack.append(loadedDirectory)
                     self.smbCurrentDirectory = loadedDirectory
                     self.smbDirectoryTableView.reloadData()
                     self.updateSMBPathLabel()
-                    self.statusLabel.text = "Tap a folder to browse. Tap the circle to select it."
+                    self.statusLabel.text = "Tap a folder name or circle to select it. Tap > to browse subfolders."
                 case .failure(let error):
                     self.statusLabel.text = error.localizedDescription
                 }
@@ -2613,6 +3093,7 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
 
 private final class SMBDirectoryCell: UITableViewCell {
     private let selectButton = UIButton(type: .custom)
+    private let openButton = UIButton(type: .system)
     private let nameLabel = UILabel()
     private let pathLabel = UILabel()
     private let labelsStack = UIStackView()
@@ -2631,6 +3112,14 @@ private final class SMBDirectoryCell: UITableViewCell {
         selectButton.translatesAutoresizingMaskIntoConstraints = false
         selectButton.contentMode = .center
         contentView.addSubview(selectButton)
+
+        openButton.translatesAutoresizingMaskIntoConstraints = false
+        openButton.setTitle(">", for: .normal)
+        openButton.titleLabel?.font = UIFont.systemFont(ofSize: 28, weight: .light)
+        openButton.setTitleColor(UIColor(red: 0.78, green: 0.78, blue: 0.80, alpha: 1), for: .normal)
+        openButton.setTitleColor(UIColor(red: 0.78, green: 0.78, blue: 0.80, alpha: 0.35), for: .disabled)
+        openButton.contentEdgeInsets = UIEdgeInsets(top: 0, left: 10, bottom: 0, right: 10)
+        contentView.addSubview(openButton)
 
         nameLabel.font = UIFont.systemFont(ofSize: 17, weight: .regular)
         nameLabel.numberOfLines = 1
@@ -2651,13 +3140,18 @@ private final class SMBDirectoryCell: UITableViewCell {
             selectButton.heightAnchor.constraint(equalToConstant: 44),
 
             labelsStack.leadingAnchor.constraint(equalTo: selectButton.trailingAnchor, constant: 6),
-            labelsStack.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -8),
+            labelsStack.trailingAnchor.constraint(equalTo: openButton.leadingAnchor, constant: -8),
             labelsStack.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 8),
-            labelsStack.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -8)
+            labelsStack.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -8),
+
+            openButton.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -2),
+            openButton.centerYAnchor.constraint(equalTo: contentView.centerYAnchor),
+            openButton.widthAnchor.constraint(equalToConstant: 44),
+            openButton.heightAnchor.constraint(equalToConstant: 44)
         ])
     }
 
-    func configure(name: String, path: String, selectedImage: UIImage, row: Int, target: Any, toggleAction: Selector, enabled: Bool) {
+    func configure(name: String, path: String, selectedImage: UIImage, row: Int, target: Any, toggleAction: Selector, openAction: Selector, enabled: Bool) {
         nameLabel.text = name
         pathLabel.text = path
         selectButton.setImage(selectedImage, for: .normal)
@@ -2665,6 +3159,10 @@ private final class SMBDirectoryCell: UITableViewCell {
         selectButton.isEnabled = enabled
         selectButton.removeTarget(nil, action: nil, for: .touchUpInside)
         selectButton.addTarget(target, action: toggleAction, for: .touchUpInside)
+        openButton.tag = row
+        openButton.isEnabled = enabled
+        openButton.removeTarget(nil, action: nil, for: .touchUpInside)
+        openButton.addTarget(target, action: openAction, for: .touchUpInside)
         contentView.alpha = enabled ? 1 : 0.5
     }
 
