@@ -356,8 +356,8 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
         view.addSubview(deferredLoadingLabel)
 
         NSLayoutConstraint.activate([
-            deferredLoadingLabel.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor, constant: 18),
-            deferredLoadingLabel.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -18)
+            deferredLoadingLabel.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor, constant: 14),
+            deferredLoadingLabel.bottomAnchor.constraint(equalTo: view.bottomAnchor, constant: -8)
         ])
     }
 
@@ -365,7 +365,7 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
         dateTimeOverlayLabel.translatesAutoresizingMaskIntoConstraints = false
         dateTimeOverlayLabel.font = UIFont.systemFont(ofSize: 34, weight: .light)
         dateTimeOverlayLabel.textColor = UIColor(white: 1, alpha: 0.92)
-        dateTimeOverlayLabel.textAlignment = .center
+        dateTimeOverlayLabel.textAlignment = .left
         dateTimeOverlayLabel.numberOfLines = 2
         dateTimeOverlayLabel.shadowColor = UIColor(white: 0, alpha: 0.55)
         dateTimeOverlayLabel.shadowOffset = CGSize(width: 0, height: 1)
@@ -385,9 +385,8 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
         view.addSubview(exifOverlayLabel)
 
         NSLayoutConstraint.activate([
-            dateTimeOverlayLabel.centerXAnchor.constraint(equalTo: view.safeAreaLayoutGuide.centerXAnchor),
-            dateTimeOverlayLabel.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 72),
-            dateTimeOverlayLabel.leadingAnchor.constraint(greaterThanOrEqualTo: view.safeAreaLayoutGuide.leadingAnchor, constant: 24),
+            dateTimeOverlayLabel.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor, constant: 24),
+            dateTimeOverlayLabel.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -20),
             dateTimeOverlayLabel.trailingAnchor.constraint(lessThanOrEqualTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -24),
             dateTimeOverlayLabel.heightAnchor.constraint(greaterThanOrEqualToConstant: 120),
 
@@ -2115,7 +2114,7 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
         let attributed = NSMutableAttributedString(string: text)
         let fullRange = NSRange(location: 0, length: attributed.length)
         let paragraph = NSMutableParagraphStyle()
-        paragraph.alignment = .center
+        paragraph.alignment = .left
         paragraph.lineSpacing = 2
         attributed.addAttributes([
             .font: UIFont.systemFont(ofSize: 32, weight: .light),
@@ -2125,7 +2124,7 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
 
         let timeRange = (text as NSString).range(of: timeText)
         let dateRange = (text as NSString).range(of: dateText)
-        attributed.addAttribute(.font, value: UIFont.systemFont(ofSize: 64, weight: .thin), range: timeRange)
+        attributed.addAttribute(.font, value: UIFont.systemFont(ofSize: 64, weight: .bold), range: timeRange)
         attributed.addAttribute(.font, value: UIFont.systemFont(ofSize: 26, weight: .regular), range: dateRange)
         dateTimeOverlayLabel.attributedText = attributed
     }
@@ -2469,6 +2468,11 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
     }
 
     @objc private func togglePanels() {
+        if settingsVisible {
+            view.endEditing(true)
+            setSettingsVisible(false)
+            return
+        }
         setPanelsVisible(!panelsVisible, animated: true, rescheduleAutoHide: true)
     }
 

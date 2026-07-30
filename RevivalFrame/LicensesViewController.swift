@@ -1,6 +1,6 @@
 import UIKit
 
-final class LicensesViewController: UIViewController {
+final class LicensesViewController: UIViewController, UITextViewDelegate {
     private let accentColor = UIColor(red: 0.12, green: 0.43, blue: 0.84, alpha: 1)
 
     override func viewDidLoad() {
@@ -42,6 +42,7 @@ final class LicensesViewController: UIViewController {
         textView.layer.cornerRadius = 12
         textView.textContainerInset = UIEdgeInsets(top: 20, left: 20, bottom: 20, right: 20)
         textView.attributedText = noticeText()
+        textView.delegate = self
         textView.linkTextAttributes = [.foregroundColor: accentColor]
         textView.accessibilityLabel = "License and open source notices"
 
@@ -87,21 +88,112 @@ final class LicensesViewController: UIViewController {
         append("libsmb2\n", attributes: heading)
         append("RevivalFrame includes and links with libsmb2, a userspace SMB2/SMB3 client library, under the GNU Lesser General Public License version 2.1. RevivalFrame elects to satisfy its distribution obligations under LGPL 2.1; this does not limit any ‘or later version’ option stated in individual upstream files. libsmb2 is free software and is provided without warranty. Kerberos support is not enabled in this build.\n\n")
         append("You may obtain, study, modify, and redistribute libsmb2 under the LGPL. You may reverse engineer the combined work to the extent needed to debug your modifications to libsmb2. Version-specific corresponding source and relinking materials are available from the RevivalFrame website or by contacting jackandjoe99@hotmail.com.\n\n")
+        append("The GNU LGPL 2.1 applies only to libsmb2 and its use in RevivalFrame. It does not license RevivalFrame’s proprietary source code under the LGPL.\n")
+        appendLink("View Full GNU LGPL 2.1", url: "revivalframe://lgpl-2.1")
+        append("\n\n")
         appendLink("License and compliance materials", url: "https://www.revivalframe.com/license")
         append("\n")
-        appendLink("GNU LGPL 2.1", url: "https://www.gnu.org/licenses/old-licenses/lgpl-2.1.html")
+        appendLink("GNU LGPL 2.1 online copy", url: "https://www.gnu.org/licenses/old-licenses/lgpl-2.1.html")
         append("\n")
         appendLink("libsmb2 upstream project", url: "https://github.com/sahlberg/libsmb2")
         append("\n\n")
-
-        append("RSA MD4 notice\n", attributes: heading)
-        append("Copyright © 1990–1992 RSA Data Security, Inc. All rights reserved.\n\nLicense to copy and use this software is granted provided that it is identified as the ‘RSA Data Security, Inc. MD4 Message-Digest Algorithm’ in all material mentioning or referencing this software or this function.\n\nLicense is also granted to make and use derivative works provided that such works are identified as ‘derived from the RSA Data Security, Inc. MD4 Message-Digest Algorithm’ in all material mentioning or referencing the derived work.\n\nRSA Data Security, Inc. makes no representations concerning either the merchantability of this software or the suitability of this software for any particular purpose. It is provided ‘as is’ without express or implied warranty of any kind.\n\nThese notices must be retained in any copies of any part of this documentation and/or software.\n\n")
 
         append("Contact\n", attributes: heading)
         append("License questions and requests for compliance materials: ")
         appendLink("jackandjoe99@hotmail.com", url: "mailto:jackandjoe99@hotmail.com")
         append("\n")
         return result
+    }
+
+    @objc private func close() {
+        dismiss(animated: true)
+    }
+
+    @objc private func showFullLGPL() {
+        let controller = LGPLTextViewController()
+        controller.modalPresentationStyle = .formSheet
+        present(controller, animated: true)
+    }
+
+    func textView(_ textView: UITextView, shouldInteractWith URL: URL, in characterRange: NSRange, interaction: UITextItemInteraction) -> Bool {
+        if URL.scheme == "revivalframe", URL.host == "lgpl-2.1" {
+            showFullLGPL()
+            return false
+        }
+        return true
+    }
+}
+
+private final class LGPLTextViewController: UIViewController {
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        if #available(iOS 13.0, *) {
+            overrideUserInterfaceStyle = .light
+        }
+        view.backgroundColor = UIColor(white: 0.97, alpha: 1)
+        buildInterface()
+    }
+
+    private func buildInterface() {
+        let titleLabel = UILabel()
+        titleLabel.text = "GNU LGPL 2.1"
+        titleLabel.font = UIFont.systemFont(ofSize: 24, weight: .bold)
+        titleLabel.textColor = UIColor(white: 0.08, alpha: 1)
+
+        let scopeLabel = UILabel()
+        scopeLabel.text = "Applies to libsmb2 only — not to RevivalFrame proprietary code."
+        scopeLabel.font = UIFont.systemFont(ofSize: 13)
+        scopeLabel.textColor = UIColor(white: 0.4, alpha: 1)
+        scopeLabel.numberOfLines = 0
+
+        let doneButton = UIButton(type: .system)
+        doneButton.setTitle("Done", for: .normal)
+        doneButton.titleLabel?.font = UIFont.systemFont(ofSize: 17, weight: .semibold)
+        doneButton.addTarget(self, action: #selector(close), for: .touchUpInside)
+
+        let heading = UIStackView(arrangedSubviews: [titleLabel, UIView(), doneButton])
+        heading.axis = .horizontal
+        heading.alignment = .center
+        heading.spacing = 12
+
+        let textView = UITextView()
+        textView.isEditable = false
+        textView.isSelectable = true
+        textView.alwaysBounceVertical = true
+        textView.backgroundColor = .white
+        textView.layer.cornerRadius = 12
+        textView.textContainerInset = UIEdgeInsets(top: 20, left: 20, bottom: 20, right: 20)
+        if #available(iOS 13.0, *) {
+            textView.font = UIFont.monospacedSystemFont(ofSize: 13, weight: .regular)
+        } else {
+            textView.font = UIFont(name: "Courier", size: 13) ?? UIFont.systemFont(ofSize: 13)
+        }
+        textView.textColor = UIColor(white: 0.16, alpha: 1)
+        textView.text = bundledLicenseText()
+        textView.accessibilityLabel = "Complete GNU Lesser General Public License version 2.1"
+
+        let stack = UIStackView(arrangedSubviews: [heading, scopeLabel, textView])
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        stack.axis = .vertical
+        stack.spacing = 12
+        view.addSubview(stack)
+
+        NSLayoutConstraint.activate([
+            stack.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor, constant: 24),
+            stack.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -24),
+            stack.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 20),
+            stack.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -20),
+            view.widthAnchor.constraint(greaterThanOrEqualToConstant: 560),
+            view.heightAnchor.constraint(greaterThanOrEqualToConstant: 560)
+        ])
+    }
+
+    private func bundledLicenseText() -> String {
+        guard let url = Bundle.main.url(forResource: "LICENCE-LGPL-2.1", withExtension: "txt"),
+              let text = try? String(contentsOf: url, encoding: .utf8) else {
+            return "The bundled GNU LGPL 2.1 license text could not be loaded. Please contact jackandjoe99@hotmail.com."
+        }
+        return text
     }
 
     @objc private func close() {
