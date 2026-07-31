@@ -62,7 +62,7 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
     private let dateTimeOverlayLabel = UILabel()
     private let exifOverlayLabel = UILabel()
     private let settingsPanel = UIVisualEffectView(effect: UIBlurEffect(style: .extraLight))
-    private let settingsTabs = UISegmentedControl(items: ["Presets", "Immich", "SMB", "Playback", "Display", "Privacy"])
+    private let settingsTabs = UISegmentedControl(items: ["Presets", "Immich", "SMB", "Playback", "Display", "About"])
     private let settingsContent = UIView()
     private let statusLabel = UILabel()
     private let immichTextView = UITextView()
@@ -1074,11 +1074,12 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
         replaceSettingsContent(with: stack)
     }
 
-    private func showPrivacySettings() {
+    private func showAboutSettings() {
         let licensesButton = makeSettingsButton(title: "License & Open Source Notices", action: #selector(showLicenses))
         let stack = UIStackView(arrangedSubviews: [
-            makeSettingsTitleLabel("Privacy"),
+            makeSettingsTitleLabel("About"),
             makeSettingsGroup([
+                makeSettingsLabel("RevivalFrame \(appVersionText())"),
                 makeSettingsLabel("Privacy Policy URL"),
                 makeSettingsLabel("https://www.revivalframe.com/privacy"),
                 makeSettingsLabel("RevivalFrame stores photo source settings on this iPad so the frame can resume playback after launch."),
@@ -1091,6 +1092,12 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
         stack.axis = .vertical
         stack.spacing = 8
         replaceSettingsContent(with: stack)
+    }
+
+    private func appVersionText() -> String {
+        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.0"
+        let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "1"
+        return "\(version) (\(build))"
     }
 
     private func makeSettingsSwitchRow(title: String, detail: String, control: UISwitch) -> UIView {
@@ -1196,7 +1203,7 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
         case 2: showSMBSettings()
         case 3: showPlaybackSettings()
         case 4: showDisplaySettings()
-        default: showPrivacySettings()
+        default: showAboutSettings()
         }
         updateSettingsLayout()
     }

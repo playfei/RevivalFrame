@@ -87,7 +87,7 @@ final class LicensesViewController: UIViewController, UITextViewDelegate {
 
         append("libsmb2\n", attributes: heading)
         append("RevivalFrame includes and links with libsmb2, a userspace SMB2/SMB3 client library, under the GNU Lesser General Public License version 2.1. RevivalFrame elects to satisfy its distribution obligations under LGPL 2.1; this does not limit any ‘or later version’ option stated in individual upstream files. libsmb2 is free software and is provided without warranty. Kerberos support is not enabled in this build.\n\n")
-        append("You may obtain, study, modify, and redistribute libsmb2 under the LGPL. You may reverse engineer the combined work to the extent needed to debug your modifications to libsmb2. Version-specific corresponding source and relinking materials are available from the RevivalFrame website or by contacting jackandjoe99@hotmail.com.\n\n")
+        append("You may obtain, study, modify, and redistribute libsmb2 under the LGPL. You may reverse engineer the combined work to the extent needed to debug your modifications to libsmb2. Version-specific corresponding source and relinking materials are available from the RevivalFrame website or by contacting support@revivalframe.com.\n\n")
         append("The GNU LGPL 2.1 applies only to libsmb2 and its use in RevivalFrame. It does not license RevivalFrame’s proprietary source code under the LGPL.\n")
         appendLink("View Full GNU LGPL 2.1", url: "revivalframe://lgpl-2.1")
         append("\n\n")
@@ -100,7 +100,7 @@ final class LicensesViewController: UIViewController, UITextViewDelegate {
 
         append("Contact\n", attributes: heading)
         append("License questions and requests for compliance materials: ")
-        appendLink("jackandjoe99@hotmail.com", url: "mailto:jackandjoe99@hotmail.com")
+        appendLink("support@revivalframe.com", url: "mailto:support@revivalframe.com")
         append("\n")
         return result
     }
