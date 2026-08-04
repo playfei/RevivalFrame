@@ -62,7 +62,12 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
     private let dateTimeOverlayLabel = UILabel()
     private let exifOverlayLabel = UILabel()
     private let settingsPanel = UIVisualEffectView(effect: UIBlurEffect(style: .extraLight))
+    private let settingsTabsScrollView = UIScrollView()
     private let settingsTabs = UISegmentedControl(items: ["Presets", "Immich", "SMB", "Playback", "Display", "About"])
+    private let settingsSidebarScrollView = UIScrollView()
+    private let settingsSidebarStack = UIStackView()
+    private let settingsTabTitles = ["Presets", "Immich", "SMB", "Playback", "Display", "About"]
+    private var settingsTabButtons: [UIButton] = []
     private let settingsContent = UIView()
     private let statusLabel = UILabel()
     private let immichTextView = UITextView()
@@ -148,11 +153,16 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
     private var settingsPanelLeadingConstraint: NSLayoutConstraint?
     private var settingsPanelTrailingConstraint: NSLayoutConstraint?
     private var settingsPanelWidthConstraint: NSLayoutConstraint?
+    private var settingsPanelBelowTopConstraint: NSLayoutConstraint?
+    private var settingsPanelAlignedTopConstraint: NSLayoutConstraint?
     private var settingsContentHeightConstraint: NSLayoutConstraint?
     private var smbDirectoryHeightConstraint: NSLayoutConstraint?
     private var immichTextViewHeightConstraint: NSLayoutConstraint?
     private var immichPasswordFieldHeightConstraint: NSLayoutConstraint?
     private var intervalValueWidthConstraint: NSLayoutConstraint?
+    private var transitionControlHeightConstraint: NSLayoutConstraint?
+    private var orderControlHeightConstraint: NSLayoutConstraint?
+    private var cacheSizeControlHeightConstraint: NSLayoutConstraint?
     private var smbURLFieldHeightConstraint: NSLayoutConstraint?
     private var smbPortFieldHeightConstraint: NSLayoutConstraint?
     private var smbShareNameFieldHeightConstraint: NSLayoutConstraint?
@@ -403,6 +413,7 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
         topPanel.translatesAutoresizingMaskIntoConstraints = false
         topPanel.layer.cornerRadius = 14
         topPanel.clipsToBounds = true
+        topPanel.setContentCompressionResistancePriority(.required, for: .vertical)
         view.addSubview(topPanel)
 
         titleLabel.text = "RevivalFrame"
@@ -413,7 +424,7 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
         detailLabel.textColor = UIColor(white: 0.82, alpha: 1)
         detailLabel.numberOfLines = 2
 
-        let settingsButton = makeControlButton(title: "Settings", action: #selector(toggleSettings))
+        let settingsButton = makeControlIconButton(symbol: "\u{2699}\u{FE0E}", accessibilityLabel: "Settings", action: #selector(toggleSettings))
         let labelStack = UIStackView(arrangedSubviews: [titleLabel, detailLabel])
         labelStack.axis = .vertical
         labelStack.spacing = 3
@@ -506,6 +517,7 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
         settingsTabs.selectedSegmentIndex = 0
         settingsTabs.addTarget(self, action: #selector(settingsTabChanged), for: .valueChanged)
         configureSettingsSegmentedControl(settingsTabs)
+        let settingsSidebar = makeSettingsSidebar()
 
         settingsContent.translatesAutoresizingMaskIntoConstraints = false
         settingsContent.backgroundColor = settingsGroupedBackground
@@ -516,31 +528,48 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
         statusLabel.numberOfLines = 3
         statusLabel.text = "Presets are ready."
 
-        let stack = UIStackView(arrangedSubviews: [headingRow, settingsTabs, settingsContent, statusLabel])
-        stack.axis = .vertical
-        stack.spacing = 12
-        stack.translatesAutoresizingMaskIntoConstraints = false
-        settingsPanel.contentView.addSubview(stack)
+        let contentColumn = UIStackView(arrangedSubviews: [settingsContent, statusLabel])
+        contentColumn.axis = .vertical
+        contentColumn.spacing = 10
+        contentColumn.alignment = .fill
+        contentColumn.distribution = .fill
+
+        let bodyRow = UIStackView(arrangedSubviews: [settingsSidebar, contentColumn])
+        bodyRow.axis = .horizontal
+        bodyRow.spacing = 14
+        bodyRow.alignment = .fill
+        bodyRow.distribution = .fill
+
+        let panelStack = UIStackView(arrangedSubviews: [headingRow, bodyRow])
+        panelStack.axis = .vertical
+        panelStack.spacing = 14
+        panelStack.translatesAutoresizingMaskIntoConstraints = false
+        settingsPanel.contentView.addSubview(panelStack)
 
         settingsPanelLeadingConstraint = settingsPanel.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor, constant: 18)
         settingsPanelTrailingConstraint = settingsPanel.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -18)
-        settingsPanelWidthConstraint = settingsPanel.widthAnchor.constraint(equalToConstant: 430)
+        settingsPanelWidthConstraint = settingsPanel.widthAnchor.constraint(equalToConstant: 560)
+        settingsPanelBelowTopConstraint = settingsPanel.topAnchor.constraint(equalTo: topPanel.bottomAnchor, constant: 12)
+        settingsPanelAlignedTopConstraint = settingsPanel.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 14)
         settingsContentHeightConstraint = settingsContent.heightAnchor.constraint(equalToConstant: 335)
 
         NSLayoutConstraint.activate([
             settingsPanelTrailingConstraint!,
             settingsPanelWidthConstraint!,
-            settingsPanel.topAnchor.constraint(equalTo: topPanel.bottomAnchor, constant: 12),
+            settingsPanelBelowTopConstraint!,
             settingsPanel.bottomAnchor.constraint(lessThanOrEqualTo: bottomPanel.topAnchor, constant: -12),
 
-            stack.leadingAnchor.constraint(equalTo: settingsPanel.contentView.leadingAnchor, constant: 16),
-            stack.trailingAnchor.constraint(equalTo: settingsPanel.contentView.trailingAnchor, constant: -16),
-            stack.topAnchor.constraint(equalTo: settingsPanel.contentView.topAnchor, constant: 16),
-            stack.bottomAnchor.constraint(equalTo: settingsPanel.contentView.bottomAnchor, constant: -16),
+            panelStack.leadingAnchor.constraint(equalTo: settingsPanel.contentView.leadingAnchor, constant: 16),
+            panelStack.trailingAnchor.constraint(equalTo: settingsPanel.contentView.trailingAnchor, constant: -16),
+            panelStack.topAnchor.constraint(equalTo: settingsPanel.contentView.topAnchor, constant: 16),
+            panelStack.bottomAnchor.constraint(equalTo: settingsPanel.contentView.bottomAnchor, constant: -16),
+            settingsSidebar.widthAnchor.constraint(equalToConstant: 122),
+            settingsSidebar.heightAnchor.constraint(equalTo: contentColumn.heightAnchor),
             settingsContentHeightConstraint!
         ])
 
-        settingsTabs.selectedSegmentIndex = UserDefaults.standard.integer(forKey: Preferences.settingsTab)
+        let storedSettingsTab = UserDefaults.standard.integer(forKey: Preferences.settingsTab)
+        settingsTabs.selectedSegmentIndex = min(max(0, storedSettingsTab), settingsTabTitles.count - 1)
         showSelectedSettingsTab()
         updateSettingsLayout()
     }
@@ -550,6 +579,18 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
         button.setTitle(title, for: .normal)
         button.addTarget(self, action: action, for: .touchUpInside)
         styleControlButton(button)
+        return button
+    }
+
+    private func makeControlIconButton(symbol: String, accessibilityLabel: String, action: Selector) -> UIButton {
+        let button = UIButton(type: .system)
+        button.setTitle(symbol, for: .normal)
+        button.accessibilityLabel = accessibilityLabel
+        button.addTarget(self, action: action, for: .touchUpInside)
+        styleControlButton(button)
+        button.titleLabel?.font = UIFont.systemFont(ofSize: 22, weight: .semibold)
+        button.contentEdgeInsets = UIEdgeInsets(top: 6, left: 10, bottom: 6, right: 10)
+        button.widthAnchor.constraint(equalToConstant: 48).isActive = true
         return button
     }
 
@@ -646,10 +687,93 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
         }
     }
 
+    private func makeSettingsTabsContainer() -> UIScrollView {
+        forceLightAppearance(settingsTabsScrollView)
+        settingsTabsScrollView.translatesAutoresizingMaskIntoConstraints = false
+        settingsTabsScrollView.backgroundColor = settingsGroupedBackground
+        settingsTabsScrollView.showsHorizontalScrollIndicator = false
+        settingsTabsScrollView.alwaysBounceHorizontal = true
+        settingsTabsScrollView.clipsToBounds = true
+
+        settingsTabs.translatesAutoresizingMaskIntoConstraints = false
+        settingsTabsScrollView.addSubview(settingsTabs)
+
+        let totalSegmentWidth: CGFloat = 444
+        let minimumTabsWidth = settingsTabs.widthAnchor.constraint(greaterThanOrEqualToConstant: totalSegmentWidth)
+        minimumTabsWidth.priority = UILayoutPriority.required
+        NSLayoutConstraint.activate([
+            settingsTabsScrollView.heightAnchor.constraint(equalToConstant: 32),
+            settingsTabs.leadingAnchor.constraint(equalTo: settingsTabsScrollView.contentLayoutGuide.leadingAnchor),
+            settingsTabs.trailingAnchor.constraint(equalTo: settingsTabsScrollView.contentLayoutGuide.trailingAnchor),
+            settingsTabs.topAnchor.constraint(equalTo: settingsTabsScrollView.contentLayoutGuide.topAnchor),
+            settingsTabs.bottomAnchor.constraint(equalTo: settingsTabsScrollView.contentLayoutGuide.bottomAnchor),
+            settingsTabs.heightAnchor.constraint(equalTo: settingsTabsScrollView.frameLayoutGuide.heightAnchor),
+            settingsTabs.widthAnchor.constraint(greaterThanOrEqualTo: settingsTabsScrollView.frameLayoutGuide.widthAnchor),
+            minimumTabsWidth
+        ])
+
+        return settingsTabsScrollView
+    }
+
+    private func makeSettingsSidebar() -> UIScrollView {
+        forceLightAppearance(settingsSidebarScrollView)
+        settingsSidebarScrollView.translatesAutoresizingMaskIntoConstraints = false
+        settingsSidebarScrollView.backgroundColor = .white
+        settingsSidebarScrollView.layer.cornerRadius = 8
+        settingsSidebarScrollView.layer.borderWidth = 0.5
+        settingsSidebarScrollView.layer.borderColor = settingsSeparator.cgColor
+        settingsSidebarScrollView.showsVerticalScrollIndicator = true
+        settingsSidebarScrollView.alwaysBounceVertical = true
+
+        settingsSidebarStack.axis = .vertical
+        settingsSidebarStack.spacing = 0
+        settingsSidebarStack.alignment = .fill
+        settingsSidebarStack.distribution = .fill
+        settingsSidebarStack.translatesAutoresizingMaskIntoConstraints = false
+        settingsSidebarScrollView.addSubview(settingsSidebarStack)
+
+        settingsTabButtons = settingsTabTitles.enumerated().map { index, title in
+            let button = UIButton(type: .system)
+            forceLightAppearance(button)
+            button.tag = index
+            button.contentHorizontalAlignment = .left
+            button.setTitle(title, for: .normal)
+            button.titleLabel?.font = UIFont.systemFont(ofSize: 15, weight: .regular)
+            button.contentEdgeInsets = UIEdgeInsets(top: 12, left: 12, bottom: 12, right: 10)
+            button.addTarget(self, action: #selector(settingsSidebarButtonTapped(_:)), for: .touchUpInside)
+            button.heightAnchor.constraint(greaterThanOrEqualToConstant: 44).isActive = true
+            settingsSidebarStack.addArrangedSubview(button)
+            return button
+        }
+
+        NSLayoutConstraint.activate([
+            settingsSidebarStack.leadingAnchor.constraint(equalTo: settingsSidebarScrollView.contentLayoutGuide.leadingAnchor),
+            settingsSidebarStack.trailingAnchor.constraint(equalTo: settingsSidebarScrollView.contentLayoutGuide.trailingAnchor),
+            settingsSidebarStack.topAnchor.constraint(equalTo: settingsSidebarScrollView.contentLayoutGuide.topAnchor),
+            settingsSidebarStack.bottomAnchor.constraint(equalTo: settingsSidebarScrollView.contentLayoutGuide.bottomAnchor),
+            settingsSidebarStack.widthAnchor.constraint(equalTo: settingsSidebarScrollView.frameLayoutGuide.widthAnchor)
+        ])
+
+        return settingsSidebarScrollView
+    }
+
+    private func updateSettingsSidebarSelection() {
+        for button in settingsTabButtons {
+            let selected = button.tag == settingsTabs.selectedSegmentIndex
+            button.backgroundColor = selected ? settingsBlue : .white
+            button.setTitleColor(selected ? .white : settingsPrimaryText, for: .normal)
+            button.titleLabel?.font = UIFont.systemFont(ofSize: 15, weight: selected ? .semibold : .regular)
+        }
+    }
+
     private func configureSettingsSegmentedControl(_ control: UISegmentedControl) {
         forceLightAppearance(control)
         control.tintColor = settingsBlue
         control.backgroundColor = .white
+        let segmentWidths: [CGFloat] = [72, 72, 58, 92, 80, 70]
+        for (index, width) in segmentWidths.enumerated() where index < control.numberOfSegments {
+            control.setWidth(width, forSegmentAt: index)
+        }
         control.setTitleTextAttributes([
             .foregroundColor: settingsBlue,
             .font: UIFont.systemFont(ofSize: 14, weight: .regular)
@@ -660,6 +784,33 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
         ], for: .selected)
         if #available(iOS 13.0, *) {
             control.selectedSegmentTintColor = settingsBlue
+        }
+    }
+
+    private func scrollSelectedSettingsTabIntoView(animated: Bool) {
+        guard settingsTabs.selectedSegmentIndex >= 0 else { return }
+        settingsTabsScrollView.layoutIfNeeded()
+        let selectedIndex = settingsTabs.selectedSegmentIndex
+        var segmentX: CGFloat = 0
+        for index in 0..<selectedIndex {
+            segmentX += settingsTabs.widthForSegment(at: index)
+        }
+        let segmentWidth = settingsTabs.widthForSegment(at: selectedIndex)
+        let visibleWidth = settingsTabsScrollView.bounds.width
+        guard visibleWidth > 0 else { return }
+
+        let targetX = max(0, segmentX + segmentWidth / 2 - visibleWidth / 2)
+        let maxX = max(0, settingsTabsScrollView.contentSize.width - visibleWidth)
+        settingsTabsScrollView.setContentOffset(CGPoint(x: min(targetX, maxX), y: 0), animated: animated)
+    }
+
+    private func enforceSettingsSegmentedControlHeight(_ control: UISegmentedControl, constraint: inout NSLayoutConstraint?) {
+        control.setContentCompressionResistancePriority(.required, for: .vertical)
+        control.setContentHuggingPriority(.required, for: .vertical)
+        if constraint == nil {
+            constraint = control.heightAnchor.constraint(equalToConstant: 32)
+            constraint?.priority = UILayoutPriority.required
+            constraint?.isActive = true
         }
     }
 
@@ -798,7 +949,8 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
 
         smbPathLabel.font = UIFont.systemFont(ofSize: 12, weight: .regular)
         smbPathLabel.textColor = settingsSecondaryText
-        smbPathLabel.numberOfLines = 2
+        smbPathLabel.numberOfLines = 1
+        smbPathLabel.lineBreakMode = .byTruncatingMiddle
         updateSMBPathLabel()
 
         forceLightAppearance(smbDirectoryTableView)
@@ -865,7 +1017,6 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
         }
 
         let connected = smbConnection != nil
-        let landscape = view.bounds.width > view.bounds.height
 
         let formGroup = makeSettingsGroup([
             smbURLRow,
@@ -873,7 +1024,7 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
             makeSettingsLabel("Credentials"),
             credentialsRow,
             buttonRow
-        ], fillVertically: !(landscape && connected))
+        ], fillVertically: true)
 
         let directoryGroup = makeSettingsGroup([
             makeSMBDirectoryHeaderRow(),
@@ -881,14 +1032,7 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
             smbDirectoryTableView
         ])
 
-        let smbContent: UIView
-        if landscape && connected {
-            let horizontalGroups = horizontalSettingsGroups([directoryGroup, formGroup])
-            formGroup.widthAnchor.constraint(equalToConstant: 360).isActive = true
-            smbContent = horizontalGroups
-        } else {
-            smbContent = verticalSettingsGroups([formGroup, directoryGroup])
-        }
+        let smbContent = verticalSettingsGroups([formGroup, directoryGroup])
         let stack = UIStackView(arrangedSubviews: [
             makeSettingsTitleLabel("SMB source"),
             smbContent
@@ -896,9 +1040,7 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
         stack.axis = .vertical
         stack.spacing = 8
 
-        if !(landscape && connected) {
-            stack.alignment = .fill
-        }
+        stack.alignment = .fill
         stack.translatesAutoresizingMaskIntoConstraints = false
 
         if smbURLFieldHeightConstraint == nil {
@@ -914,7 +1056,7 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
             smbPasswordFieldHeightConstraint?.isActive = true
         }
         smbDirectoryHeightConstraint?.isActive = false
-        smbDirectoryHeightConstraint = smbDirectoryTableView.heightAnchor.constraint(equalToConstant: connected ? (landscape ? 280 : 260) : 80)
+        smbDirectoryHeightConstraint = smbDirectoryTableView.heightAnchor.constraint(equalToConstant: connected ? 260 : 80)
         smbDirectoryHeightConstraint?.isActive = true
 
         let scrollView = UIScrollView()
@@ -981,11 +1123,13 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
         transitionControl.removeTarget(nil, action: nil, for: .valueChanged)
         transitionControl.addTarget(self, action: #selector(transitionChanged), for: .valueChanged)
         configureSettingsSegmentedControl(transitionControl)
+        enforceSettingsSegmentedControlHeight(transitionControl, constraint: &transitionControlHeightConstraint)
 
         orderControl.selectedSegmentIndex = playbackOrder.rawValue
         orderControl.removeTarget(nil, action: nil, for: .valueChanged)
         orderControl.addTarget(self, action: #selector(orderChanged), for: .valueChanged)
         configureSettingsSegmentedControl(orderControl)
+        enforceSettingsSegmentedControlHeight(orderControl, constraint: &orderControlHeightConstraint)
 
         intervalSlider.minimumValue = 5
         intervalSlider.maximumValue = 60
@@ -1011,6 +1155,7 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
         cacheSizeControl.removeTarget(nil, action: nil, for: .valueChanged)
         cacheSizeControl.addTarget(self, action: #selector(cacheSizeChanged), for: .valueChanged)
         configureSettingsSegmentedControl(cacheSizeControl)
+        enforceSettingsSegmentedControlHeight(cacheSizeControl, constraint: &cacheSizeControlHeightConstraint)
 
         cacheStatusLabel.font = UIFont.systemFont(ofSize: 12, weight: .regular)
         cacheStatusLabel.textColor = settingsSecondaryText
@@ -1197,6 +1342,7 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
     }
 
     private func showSelectedSettingsTab() {
+        updateSettingsSidebarSelection()
         switch settingsTabs.selectedSegmentIndex {
         case 0: showPresetsSettings()
         case 1: showImmichSettings()
@@ -1213,16 +1359,20 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
         let smbTabActive = settingsTabs.selectedSegmentIndex == 2
         let connectedSMB = smbConnection != nil
         let landscape = view.bounds.width > view.bounds.height
-        let expandedLandscapeSMB = smbTabActive && connectedSMB && landscape
 
-        settingsPanelLeadingConstraint?.isActive = expandedLandscapeSMB
-        settingsPanelWidthConstraint?.isActive = !expandedLandscapeSMB
+        settingsPanelLeadingConstraint?.isActive = false
+        settingsPanelWidthConstraint?.isActive = true
         settingsPanelTrailingConstraint?.isActive = true
+        settingsPanelBelowTopConstraint?.isActive = !landscape
+        settingsPanelAlignedTopConstraint?.isActive = landscape
 
         if smbTabActive && connectedSMB {
-            settingsContentHeightConstraint?.constant = landscape ? 335 : min(560, max(420, view.bounds.height - 430))
-            smbDirectoryHeightConstraint?.constant = landscape ? 280 : min(380, max(240, (settingsContentHeightConstraint?.constant ?? 420) - 170))
+            statusLabel.numberOfLines = landscape ? 2 : 3
+            let availableLandscapeHeight = max(360, view.bounds.height - 170)
+            settingsContentHeightConstraint?.constant = landscape ? min(500, availableLandscapeHeight) : min(560, max(420, view.bounds.height - 430))
+            smbDirectoryHeightConstraint?.constant = landscape ? min(360, max(280, (settingsContentHeightConstraint?.constant ?? 420) - 125)) : min(400, max(260, (settingsContentHeightConstraint?.constant ?? 420) - 190))
         } else {
+            statusLabel.numberOfLines = 3
             settingsContentHeightConstraint?.constant = 335
             smbDirectoryHeightConstraint?.constant = 80
         }
@@ -2626,6 +2776,14 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
         view.endEditing(true)
         UserDefaults.standard.set(settingsTabs.selectedSegmentIndex, forKey: Preferences.settingsTab)
         showSelectedSettingsTab()
+        scrollSelectedSettingsTabIntoView(animated: true)
+    }
+
+    @objc private func settingsSidebarButtonTapped(_ sender: UIButton) {
+        view.endEditing(true)
+        settingsTabs.selectedSegmentIndex = sender.tag
+        UserDefaults.standard.set(settingsTabs.selectedSegmentIndex, forKey: Preferences.settingsTab)
+        showSelectedSettingsTab()
     }
 
     @objc private func showLicenses() {
@@ -2871,12 +3029,7 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
     private func updateSMBPathLabel() {
         guard isViewLoaded else { return }
         if let directory = smbCurrentDirectory {
-            let selectedCount = selectedSMBDirectories.count
-            if selectedCount > 0 {
-                smbPathLabel.text = "\(directory.displayPath)\n\(selectedCount) folder(s) selected."
-            } else {
-                smbPathLabel.text = "\(directory.displayPath)\nTap folders to select; tap Open to browse."
-            }
+            smbPathLabel.text = directory.displayPath
         } else {
             smbPathLabel.text = "Not connected."
         }

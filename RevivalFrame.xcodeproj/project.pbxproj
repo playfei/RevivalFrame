@@ -179,7 +179,7 @@
 					"-framework",
 					SystemConfiguration,
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = com.revivalframe.ios;
+				PRODUCT_BUNDLE_IDENTIFIER = com.revivalframe;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_OBJC_BRIDGING_HEADER = "RevivalFrame/RevivalFrame-Bridging-Header.h";
@@ -229,7 +229,7 @@
 					"-framework",
 					SystemConfiguration,
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = com.revivalframe.ios;
+				PRODUCT_BUNDLE_IDENTIFIER = com.revivalframe;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_OBJC_BRIDGING_HEADER = "RevivalFrame/RevivalFrame-Bridging-Header.h";
