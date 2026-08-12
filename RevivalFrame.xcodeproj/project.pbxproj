@@ -162,7 +162,7 @@
 				);
 				INFOPLIST_FILE = RevivalFrame/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = RevivalFrame;
-				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "RevivalFrame connects to local SMB photo sources on your network.";
+				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "RevivalFrame connects to Immich and SMB photo sources on your local network.";
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchStoryboardName = LaunchScreen;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
@@ -212,7 +212,7 @@
 				);
 				INFOPLIST_FILE = RevivalFrame/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = RevivalFrame;
-				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "RevivalFrame connects to local SMB photo sources on your network.";
+				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "RevivalFrame connects to Immich and SMB photo sources on your local network.";
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchStoryboardName = LaunchScreen;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
