@@ -48,7 +48,7 @@ private enum PlaybackOrder: Int {
     }
 }
 
-final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecognizerDelegate, UITableViewDataSource, UITableViewDelegate, URLSessionDownloadDelegate {
+class ViewController: UIViewController, UITextViewDelegate, UIGestureRecognizerDelegate, UITableViewDataSource, UITableViewDelegate, URLSessionDownloadDelegate {
     private let blurredBackgroundImageView = UIImageView()
     private let blurredBackgroundOverlay = UIVisualEffectView(effect: UIBlurEffect(style: .dark))
     private let imageView = UIImageView()
@@ -172,6 +172,15 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
     private var smbConnectButtonHeightConstraint: NSLayoutConstraint?
     private var smbBackButtonHeightConstraint: NSLayoutConstraint?
     private var smbApplyButtonHeightConstraint: NSLayoutConstraint?
+#if IPHONE_APP
+    private let phoneSettingsTitleLabel = UILabel()
+    private let phoneSettingsBackButton = UIButton(type: .system)
+    private let phoneSettingsBody = UIView()
+    private let phoneTransitionValueButton = UIButton(type: .system)
+    private let phoneOrderValueButton = UIButton(type: .system)
+    private let phoneCacheValueButton = UIButton(type: .system)
+    private let phoneDurationField = UITextField()
+#endif
 
     private lazy var remoteDownloadSession: URLSession = {
         let configuration = URLSessionConfiguration.default
@@ -454,17 +463,39 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
         bottomPanel.clipsToBounds = true
         view.addSubview(bottomPanel)
 
+#if IPHONE_APP
+        let previousButton = makePlaybackIconButton(symbolName: "backward.end.fill", accessibilityLabel: "Previous", action: #selector(previousPhoto))
+        configurePlayPauseButtonForPhone()
+        let nextButton = makePlaybackIconButton(symbolName: "forward.end.fill", accessibilityLabel: "Next", action: #selector(nextPhoto))
+        let shuffleButton = makePlaybackIconButton(symbolName: "shuffle", accessibilityLabel: "Shuffle", action: #selector(shufflePhoto))
+        bottomPanel.effect = nil
+        bottomPanel.backgroundColor = .clear
+#else
         let previousButton = makeControlButton(title: "Prev", action: #selector(previousPhoto))
         playPauseButton.setTitle("Pause", for: .normal)
-        playPauseButton.addTarget(self, action: #selector(togglePlayback), for: .touchUpInside)
-        styleControlButton(playPauseButton)
         let nextButton = makeControlButton(title: "Next", action: #selector(nextPhoto))
         let shuffleButton = makeControlButton(title: "Shuffle", action: #selector(shufflePhoto))
+#endif
+        playPauseButton.addTarget(self, action: #selector(togglePlayback), for: .touchUpInside)
+        styleControlButton(playPauseButton)
+#if IPHONE_APP
+        playPauseButton.backgroundColor = .clear
+        playPauseButton.layer.cornerRadius = 0
+        bottomPanel.contentView.backgroundColor = .clear
+#endif
 
         summaryLabel.font = UIFont.systemFont(ofSize: 13, weight: .regular)
         summaryLabel.textColor = UIColor(white: 0.84, alpha: 1)
         summaryLabel.numberOfLines = 1
 
+#if IPHONE_APP
+        let bottomStack = UIStackView(arrangedSubviews: [
+            previousButton,
+            playPauseButton,
+            nextButton,
+            shuffleButton
+        ])
+#else
         let bottomStack = UIStackView(arrangedSubviews: [
             previousButton,
             playPauseButton,
@@ -472,12 +503,25 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
             shuffleButton,
             summaryLabel
         ])
+#endif
         bottomStack.axis = .horizontal
         bottomStack.alignment = .center
         bottomStack.spacing = 10
         bottomStack.translatesAutoresizingMaskIntoConstraints = false
         bottomPanel.contentView.addSubview(bottomStack)
 
+#if IPHONE_APP
+        NSLayoutConstraint.activate([
+            bottomPanel.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+            bottomPanel.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -10),
+
+            bottomStack.leadingAnchor.constraint(equalTo: bottomPanel.contentView.leadingAnchor, constant: 10),
+            bottomStack.trailingAnchor.constraint(equalTo: bottomPanel.contentView.trailingAnchor, constant: -10),
+            bottomStack.topAnchor.constraint(equalTo: bottomPanel.contentView.topAnchor, constant: 8),
+            bottomStack.bottomAnchor.constraint(equalTo: bottomPanel.contentView.bottomAnchor, constant: -8),
+            bottomStack.heightAnchor.constraint(greaterThanOrEqualToConstant: 44)
+        ])
+#else
         NSLayoutConstraint.activate([
             bottomPanel.centerXAnchor.constraint(equalTo: view.centerXAnchor),
             bottomPanel.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -18),
@@ -489,9 +533,14 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
             bottomStack.topAnchor.constraint(equalTo: bottomPanel.contentView.topAnchor, constant: 12),
             bottomStack.bottomAnchor.constraint(equalTo: bottomPanel.contentView.bottomAnchor, constant: -12)
         ])
+#endif
     }
 
     private func buildSettingsPanel() {
+#if IPHONE_APP
+        buildPhoneSettingsPanel()
+        return
+#else
         forceLightAppearance(settingsPanel)
         forceLightAppearance(settingsPanel.contentView)
         settingsPanel.translatesAutoresizingMaskIntoConstraints = false
@@ -572,7 +621,186 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
         settingsTabs.selectedSegmentIndex = min(max(0, storedSettingsTab), settingsTabTitles.count - 1)
         showSelectedSettingsTab()
         updateSettingsLayout()
+#endif
     }
+
+#if IPHONE_APP
+    private func buildPhoneSettingsPanel() {
+        forceLightAppearance(settingsPanel)
+        settingsPanel.translatesAutoresizingMaskIntoConstraints = false
+        settingsPanel.effect = nil
+        settingsPanel.backgroundColor = settingsGroupedBackground
+        settingsPanel.contentView.backgroundColor = settingsGroupedBackground
+        settingsPanel.isHidden = true
+        settingsPanel.alpha = 0
+        view.addSubview(settingsPanel)
+
+        phoneSettingsTitleLabel.text = "Settings"
+        phoneSettingsTitleLabel.font = UIFont.systemFont(ofSize: 34, weight: .bold)
+        phoneSettingsTitleLabel.textColor = settingsPrimaryText
+
+        phoneSettingsBackButton.setTitle("‹ Settings", for: .normal)
+        phoneSettingsBackButton.titleLabel?.font = UIFont.systemFont(ofSize: 17)
+        phoneSettingsBackButton.contentHorizontalAlignment = .left
+        phoneSettingsBackButton.addTarget(self, action: #selector(showPhoneSettingsMainMenu), for: .touchUpInside)
+        phoneSettingsBackButton.isHidden = true
+
+        let doneButton = makeSettingsPlainButton(title: "Done", action: #selector(toggleSettings), weight: .semibold)
+        let navigationRow = UIStackView(arrangedSubviews: [phoneSettingsBackButton, phoneSettingsTitleLabel, doneButton])
+        navigationRow.axis = .horizontal
+        navigationRow.alignment = .center
+        navigationRow.spacing = 8
+        navigationRow.translatesAutoresizingMaskIntoConstraints = false
+        phoneSettingsTitleLabel.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        doneButton.setContentHuggingPriority(.required, for: .horizontal)
+
+        phoneSettingsBody.translatesAutoresizingMaskIntoConstraints = false
+        settingsPanel.contentView.addSubview(navigationRow)
+        settingsPanel.contentView.addSubview(phoneSettingsBody)
+
+        NSLayoutConstraint.activate([
+            settingsPanel.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            settingsPanel.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            settingsPanel.topAnchor.constraint(equalTo: view.topAnchor),
+            settingsPanel.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+
+            navigationRow.leadingAnchor.constraint(equalTo: settingsPanel.contentView.safeAreaLayoutGuide.leadingAnchor, constant: 16),
+            navigationRow.trailingAnchor.constraint(equalTo: settingsPanel.contentView.safeAreaLayoutGuide.trailingAnchor, constant: -10),
+            navigationRow.topAnchor.constraint(equalTo: settingsPanel.contentView.safeAreaLayoutGuide.topAnchor, constant: 10),
+            navigationRow.heightAnchor.constraint(greaterThanOrEqualToConstant: 44),
+
+            phoneSettingsBody.leadingAnchor.constraint(equalTo: settingsPanel.contentView.leadingAnchor),
+            phoneSettingsBody.trailingAnchor.constraint(equalTo: settingsPanel.contentView.trailingAnchor),
+            phoneSettingsBody.topAnchor.constraint(equalTo: navigationRow.bottomAnchor, constant: 8),
+            phoneSettingsBody.bottomAnchor.constraint(equalTo: settingsPanel.contentView.bottomAnchor)
+        ])
+
+        statusLabel.font = UIFont.systemFont(ofSize: 13)
+        statusLabel.textColor = settingsSecondaryText
+        statusLabel.numberOfLines = 0
+        statusLabel.text = "Presets are ready."
+        showPhoneSettingsMainMenu()
+    }
+
+    @objc private func showPhoneSettingsMainMenu() {
+        view.endEditing(true)
+        phoneSettingsTitleLabel.text = "Settings"
+        phoneSettingsTitleLabel.font = UIFont.systemFont(ofSize: 34, weight: .bold)
+        phoneSettingsBackButton.isHidden = true
+        phoneSettingsBody.subviews.forEach { $0.removeFromSuperview() }
+
+        let scrollView = UIScrollView()
+        scrollView.translatesAutoresizingMaskIntoConstraints = false
+        scrollView.alwaysBounceVertical = true
+        phoneSettingsBody.addSubview(scrollView)
+
+        let rows = settingsTabTitles.enumerated().map { index, title in
+            makePhoneSettingsMenuRow(title: title, index: index)
+        }
+        let menu = UIStackView(arrangedSubviews: rows)
+        menu.axis = .vertical
+        menu.spacing = 0
+        menu.backgroundColor = .white
+        menu.layer.cornerRadius = 10
+        menu.clipsToBounds = true
+        menu.translatesAutoresizingMaskIntoConstraints = false
+        scrollView.addSubview(menu)
+
+        NSLayoutConstraint.activate([
+            scrollView.leadingAnchor.constraint(equalTo: phoneSettingsBody.leadingAnchor),
+            scrollView.trailingAnchor.constraint(equalTo: phoneSettingsBody.trailingAnchor),
+            scrollView.topAnchor.constraint(equalTo: phoneSettingsBody.topAnchor),
+            scrollView.bottomAnchor.constraint(equalTo: phoneSettingsBody.bottomAnchor),
+            menu.leadingAnchor.constraint(equalTo: scrollView.contentLayoutGuide.leadingAnchor, constant: 16),
+            menu.trailingAnchor.constraint(equalTo: scrollView.contentLayoutGuide.trailingAnchor, constant: -16),
+            menu.topAnchor.constraint(equalTo: scrollView.contentLayoutGuide.topAnchor, constant: 20),
+            menu.bottomAnchor.constraint(equalTo: scrollView.contentLayoutGuide.bottomAnchor, constant: -24),
+            menu.widthAnchor.constraint(equalTo: scrollView.frameLayoutGuide.widthAnchor, constant: -32)
+        ])
+    }
+
+    private func makePhoneSettingsMenuRow(title: String, index: Int) -> UIView {
+        let button = UIButton(type: .system)
+        button.tag = index
+        button.contentHorizontalAlignment = .fill
+        button.addTarget(self, action: #selector(phoneSettingsMenuTapped(_:)), for: .touchUpInside)
+
+        let label = UILabel()
+        label.text = title
+        label.font = UIFont.systemFont(ofSize: 17)
+        label.textColor = settingsPrimaryText
+        let chevron = UIImageView(image: UIImage(systemName: "chevron.right"))
+        chevron.tintColor = UIColor(white: 0.72, alpha: 1)
+        chevron.setContentHuggingPriority(.required, for: .horizontal)
+        let row = UIStackView(arrangedSubviews: [label, chevron])
+        row.axis = .horizontal
+        row.alignment = .center
+        row.isUserInteractionEnabled = false
+        row.translatesAutoresizingMaskIntoConstraints = false
+        button.addSubview(row)
+
+        let separator = UIView()
+        separator.backgroundColor = settingsSeparator
+        separator.translatesAutoresizingMaskIntoConstraints = false
+        button.addSubview(separator)
+        separator.isHidden = index == settingsTabTitles.count - 1
+
+        NSLayoutConstraint.activate([
+            button.heightAnchor.constraint(equalToConstant: 54),
+            row.leadingAnchor.constraint(equalTo: button.leadingAnchor, constant: 16),
+            row.trailingAnchor.constraint(equalTo: button.trailingAnchor, constant: -16),
+            row.centerYAnchor.constraint(equalTo: button.centerYAnchor),
+            separator.leadingAnchor.constraint(equalTo: button.leadingAnchor, constant: 16),
+            separator.trailingAnchor.constraint(equalTo: button.trailingAnchor),
+            separator.bottomAnchor.constraint(equalTo: button.bottomAnchor),
+            separator.heightAnchor.constraint(equalToConstant: 0.5)
+        ])
+        return button
+    }
+
+    @objc private func phoneSettingsMenuTapped(_ sender: UIButton) {
+        settingsTabs.selectedSegmentIndex = sender.tag
+        UserDefaults.standard.set(sender.tag, forKey: Preferences.settingsTab)
+        showPhoneSettingsDetail(index: sender.tag)
+    }
+
+    private func showPhoneSettingsDetail(index: Int) {
+        view.endEditing(true)
+        phoneSettingsTitleLabel.text = settingsTabTitles[index]
+        phoneSettingsTitleLabel.font = UIFont.systemFont(ofSize: 20, weight: .semibold)
+        phoneSettingsBackButton.isHidden = false
+        phoneSettingsBody.subviews.forEach { $0.removeFromSuperview() }
+
+        let scrollView = UIScrollView()
+        scrollView.translatesAutoresizingMaskIntoConstraints = false
+        scrollView.alwaysBounceVertical = true
+        phoneSettingsBody.addSubview(scrollView)
+
+        settingsContent.translatesAutoresizingMaskIntoConstraints = false
+        settingsContent.backgroundColor = settingsGroupedBackground
+        let column = UIStackView(arrangedSubviews: [settingsContent, statusLabel])
+        column.axis = .vertical
+        column.spacing = 16
+        column.translatesAutoresizingMaskIntoConstraints = false
+        scrollView.addSubview(column)
+        settingsContentHeightConstraint = settingsContent.heightAnchor.constraint(equalToConstant: index == 2 ? 620 : 420)
+        settingsContentHeightConstraint?.isActive = true
+
+        NSLayoutConstraint.activate([
+            scrollView.leadingAnchor.constraint(equalTo: phoneSettingsBody.leadingAnchor),
+            scrollView.trailingAnchor.constraint(equalTo: phoneSettingsBody.trailingAnchor),
+            scrollView.topAnchor.constraint(equalTo: phoneSettingsBody.topAnchor),
+            scrollView.bottomAnchor.constraint(equalTo: phoneSettingsBody.bottomAnchor),
+            column.leadingAnchor.constraint(equalTo: scrollView.contentLayoutGuide.leadingAnchor, constant: 16),
+            column.trailingAnchor.constraint(equalTo: scrollView.contentLayoutGuide.trailingAnchor, constant: -16),
+            column.topAnchor.constraint(equalTo: scrollView.contentLayoutGuide.topAnchor, constant: 14),
+            column.bottomAnchor.constraint(equalTo: scrollView.contentLayoutGuide.bottomAnchor, constant: -30),
+            column.widthAnchor.constraint(equalTo: scrollView.frameLayoutGuide.widthAnchor, constant: -32)
+        ])
+
+        showSelectedSettingsTab()
+    }
+#endif
 
     private func makeControlButton(title: String, action: Selector) -> UIButton {
         let button = UIButton(type: .system)
@@ -581,6 +809,44 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
         styleControlButton(button)
         return button
     }
+
+#if IPHONE_APP
+    private func makePlaybackIconButton(symbolName: String, accessibilityLabel: String, action: Selector) -> UIButton {
+        let button = UIButton(type: .system)
+        button.configuration = nil
+        button.setImage(playbackSymbol(named: symbolName), for: .normal)
+        button.accessibilityLabel = accessibilityLabel
+        button.addTarget(self, action: action, for: .touchUpInside)
+        styleControlButton(button)
+        button.backgroundColor = .clear
+        button.layer.cornerRadius = 0
+        button.widthAnchor.constraint(equalToConstant: 44).isActive = true
+        button.heightAnchor.constraint(equalToConstant: 44).isActive = true
+        button.setContentCompressionResistancePriority(.required, for: .horizontal)
+        button.setContentCompressionResistancePriority(.required, for: .vertical)
+        return button
+    }
+
+    private func configurePlayPauseButtonForPhone() {
+        let symbolName = isPlaying ? "pause.fill" : "play.fill"
+        playPauseButton.setTitle(nil, for: .normal)
+        playPauseButton.setImage(playbackSymbol(named: symbolName), for: .normal)
+        playPauseButton.accessibilityLabel = isPlaying ? "Pause" : "Play"
+        playPauseButton.backgroundColor = .clear
+        playPauseButton.layer.cornerRadius = 0
+        if playPauseButton.constraints.contains(where: { $0.firstAttribute == .width }) == false {
+            playPauseButton.widthAnchor.constraint(equalToConstant: 44).isActive = true
+            playPauseButton.heightAnchor.constraint(equalToConstant: 44).isActive = true
+        }
+        playPauseButton.setContentCompressionResistancePriority(.required, for: .horizontal)
+        playPauseButton.setContentCompressionResistancePriority(.required, for: .vertical)
+    }
+
+    private func playbackSymbol(named name: String) -> UIImage? {
+        let configuration = UIImage.SymbolConfiguration(pointSize: 18, weight: .semibold)
+        return UIImage(systemName: name, withConfiguration: configuration)
+    }
+#endif
 
     private func makeControlIconButton(symbol: String, accessibilityLabel: String, action: Selector) -> UIButton {
         let button = UIButton(type: .system)
@@ -1056,7 +1322,14 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
             smbPasswordFieldHeightConstraint?.isActive = true
         }
         smbDirectoryHeightConstraint?.isActive = false
+#if IPHONE_APP
+        // Keep the directory tree inside the visible phone viewport. Additional
+        // directories scroll inside the table instead of growing the page.
+        let availableDirectoryHeight = max(220, min(340, view.bounds.height * 0.38))
+        smbDirectoryHeightConstraint = smbDirectoryTableView.heightAnchor.constraint(equalToConstant: connected ? availableDirectoryHeight : 120)
+#else
         smbDirectoryHeightConstraint = smbDirectoryTableView.heightAnchor.constraint(equalToConstant: connected ? 260 : 80)
+#endif
         smbDirectoryHeightConstraint?.isActive = true
 
         let scrollView = UIScrollView()
@@ -1119,6 +1392,10 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
     }
 
     private func showPlaybackSettings() {
+#if IPHONE_APP
+        showPhonePlaybackSettings()
+        return
+#else
         transitionControl.selectedSegmentIndex = transitionMode.rawValue
         transitionControl.removeTarget(nil, action: nil, for: .valueChanged)
         transitionControl.addTarget(self, action: #selector(transitionChanged), for: .valueChanged)
@@ -1185,7 +1462,181 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
         stack.axis = .vertical
         stack.spacing = 8
         replaceSettingsContent(with: stack)
+#endif
     }
+
+#if IPHONE_APP
+    private func showPhonePlaybackSettings() {
+        configurePhonePlaybackValueButton(phoneTransitionValueButton, title: transitionMode.title, action: #selector(choosePhoneTransition))
+        configurePhonePlaybackValueButton(phoneOrderValueButton, title: playbackOrder.title, action: #selector(choosePhoneDisplayOrder))
+        configurePhonePlaybackValueButton(phoneCacheValueButton, title: "\(cacheSizeMB) MB", action: #selector(choosePhoneCacheSize))
+
+        forceLightAppearance(phoneDurationField)
+        phoneDurationField.text = "\(Int(interval))"
+        phoneDurationField.font = UIFont.monospacedDigitSystemFont(ofSize: 17, weight: .regular)
+        phoneDurationField.textColor = settingsPrimaryText
+        phoneDurationField.textAlignment = .center
+        phoneDurationField.keyboardType = .numberPad
+        phoneDurationField.borderStyle = .roundedRect
+        phoneDurationField.backgroundColor = settingsGroupedBackground
+        phoneDurationField.removeTarget(nil, action: nil, for: .editingChanged)
+        phoneDurationField.removeTarget(nil, action: nil, for: .editingDidEnd)
+        phoneDurationField.addTarget(self, action: #selector(phoneDurationEditingChanged), for: .editingChanged)
+        phoneDurationField.addTarget(self, action: #selector(phoneDurationEditingEnded), for: .editingDidEnd)
+        phoneDurationField.widthAnchor.constraint(equalToConstant: 64).isActive = true
+        phoneDurationField.heightAnchor.constraint(equalToConstant: 36).isActive = true
+
+        let secondsLabel = UILabel()
+        secondsLabel.text = "seconds"
+        secondsLabel.font = UIFont.systemFont(ofSize: 17)
+        secondsLabel.textColor = settingsSecondaryText
+        let durationValue = UIStackView(arrangedSubviews: [phoneDurationField, secondsLabel])
+        durationValue.axis = .horizontal
+        durationValue.alignment = .center
+        durationValue.spacing = 7
+
+        let rows = [
+            makePhonePlaybackRow(title: "Transition", valueView: phoneTransitionValueButton, showsSeparator: true),
+            makePhonePlaybackRow(title: "Display Order", valueView: phoneOrderValueButton, showsSeparator: true),
+            makePhonePlaybackRow(title: "Duration", valueView: durationValue, showsSeparator: true),
+            makePhonePlaybackRow(title: "Cache Size", valueView: phoneCacheValueButton, showsSeparator: false)
+        ]
+        let group = UIStackView(arrangedSubviews: rows)
+        group.axis = .vertical
+        group.spacing = 0
+        group.backgroundColor = .white
+        group.layer.cornerRadius = 10
+        group.clipsToBounds = true
+
+        cacheStatusLabel.font = UIFont.systemFont(ofSize: 13)
+        cacheStatusLabel.textColor = settingsSecondaryText
+        cacheStatusLabel.numberOfLines = 0
+        updateCacheStatus()
+        downloadRateLabel.font = UIFont.monospacedDigitSystemFont(ofSize: 12, weight: .regular)
+        downloadRateLabel.textColor = settingsSecondaryText
+        updateDownloadRateLabel()
+
+        let stack = UIStackView(arrangedSubviews: [group, cacheStatusLabel, downloadRateLabel])
+        stack.axis = .vertical
+        stack.spacing = 12
+        replaceSettingsContent(with: stack)
+    }
+
+    private func configurePhonePlaybackValueButton(_ button: UIButton, title: String, action: Selector) {
+        button.configuration = nil
+        button.setTitle(title, for: .normal)
+        button.setTitleColor(settingsBlue, for: .normal)
+        button.titleLabel?.font = UIFont.systemFont(ofSize: 17)
+        button.contentHorizontalAlignment = .right
+        button.backgroundColor = .clear
+        button.removeTarget(nil, action: nil, for: .touchUpInside)
+        button.addTarget(self, action: action, for: .touchUpInside)
+        button.setContentHuggingPriority(.required, for: .horizontal)
+    }
+
+    private func makePhonePlaybackRow(title: String, valueView: UIView, showsSeparator: Bool) -> UIView {
+        let label = UILabel()
+        label.text = title
+        label.font = UIFont.systemFont(ofSize: 17)
+        label.textColor = settingsPrimaryText
+        label.setContentCompressionResistancePriority(.required, for: .horizontal)
+
+        let row = UIStackView(arrangedSubviews: [label, valueView])
+        row.axis = .horizontal
+        row.alignment = .center
+        row.spacing = 12
+        row.translatesAutoresizingMaskIntoConstraints = false
+
+        let wrapper = UIView()
+        wrapper.backgroundColor = .white
+        wrapper.addSubview(row)
+        let separator = UIView()
+        separator.backgroundColor = settingsSeparator
+        separator.translatesAutoresizingMaskIntoConstraints = false
+        separator.isHidden = !showsSeparator
+        wrapper.addSubview(separator)
+        NSLayoutConstraint.activate([
+            wrapper.heightAnchor.constraint(greaterThanOrEqualToConstant: 54),
+            row.leadingAnchor.constraint(equalTo: wrapper.leadingAnchor, constant: 16),
+            row.trailingAnchor.constraint(equalTo: wrapper.trailingAnchor, constant: -16),
+            row.topAnchor.constraint(equalTo: wrapper.topAnchor, constant: 8),
+            row.bottomAnchor.constraint(equalTo: wrapper.bottomAnchor, constant: -8),
+            separator.leadingAnchor.constraint(equalTo: wrapper.leadingAnchor, constant: 16),
+            separator.trailingAnchor.constraint(equalTo: wrapper.trailingAnchor),
+            separator.bottomAnchor.constraint(equalTo: wrapper.bottomAnchor),
+            separator.heightAnchor.constraint(equalToConstant: 0.5)
+        ])
+        return wrapper
+    }
+
+    @objc private func choosePhoneTransition() {
+        presentPhonePlaybackChoices(title: "Transition", choices: TransitionMode.all.map { $0.title }, selectedIndex: transitionMode.rawValue) { [weak self] index in
+            guard let self = self, let mode = TransitionMode(rawValue: index) else { return }
+            self.transitionMode = mode
+            self.phoneTransitionValueButton.setTitle(mode.title, for: .normal)
+            self.savePlaybackPreferences()
+            self.updatePlaybackSummary()
+        }
+    }
+
+    @objc private func choosePhoneDisplayOrder() {
+        let choices = [PlaybackOrder.sequential.title, PlaybackOrder.random.title]
+        presentPhonePlaybackChoices(title: "Display Order", choices: choices, selectedIndex: playbackOrder.rawValue) { [weak self] index in
+            guard let self = self, let order = PlaybackOrder(rawValue: index) else { return }
+            self.playbackOrder = order
+            self.phoneOrderValueButton.setTitle(order.title, for: .normal)
+            self.savePlaybackPreferences()
+            self.cancelRemoteImageLoads()
+            self.clearImageCache()
+            self.resetRandomQueue()
+            self.prefetchUpcomingPhotos(after: self.currentIndex)
+            self.updatePlaybackSummary()
+        }
+    }
+
+    @objc private func choosePhoneCacheSize() {
+        let choices = cacheSizeOptionsMB.map { "\($0) MB" }
+        let selectedIndex = cacheSizeOptionsMB.firstIndex(of: cacheSizeMB) ?? 1
+        presentPhonePlaybackChoices(title: "Cache Size", choices: choices, selectedIndex: selectedIndex) { [weak self] index in
+            guard let self = self else { return }
+            self.cacheSizeMB = self.cacheSizeOptionsMB[index]
+            self.phoneCacheValueButton.setTitle("\(self.cacheSizeMB) MB", for: .normal)
+            self.configureImageCache()
+            self.clearImageCache()
+            self.cancelRemoteImageLoads()
+            self.savePlaybackPreferences()
+            self.updateCacheStatus()
+            self.showPhoto(at: self.currentIndex, animated: false)
+        }
+    }
+
+    private func presentPhonePlaybackChoices(title: String, choices: [String], selectedIndex: Int, selection: @escaping (Int) -> Void) {
+        view.endEditing(true)
+        let sheet = UIAlertController(title: title, message: nil, preferredStyle: .actionSheet)
+        for (index, choice) in choices.enumerated() {
+            let displayTitle = index == selectedIndex ? "✓  \(choice)" : choice
+            sheet.addAction(UIAlertAction(title: displayTitle, style: .default) { _ in selection(index) })
+        }
+        sheet.addAction(UIAlertAction(title: "Cancel", style: .cancel))
+        present(sheet, animated: true)
+    }
+
+    @objc private func phoneDurationEditingChanged() {
+        phoneDurationField.text = phoneDurationField.text?.filter { $0.isNumber }
+    }
+
+    @objc private func phoneDurationEditingEnded() {
+        let entered = Int(phoneDurationField.text ?? "") ?? Int(interval)
+        let normalized = min(3600, max(1, entered))
+        interval = TimeInterval(normalized)
+        phoneDurationField.text = "\(normalized)"
+        savePlaybackPreferences()
+        updatePlaybackSummary()
+        if isPlaying && currentPhotoReadyForTiming {
+            scheduleNextPhotoTimer()
+        }
+    }
+#endif
 
     private func showDisplaySettings() {
         dateTimeSwitch.isOn = showDateTimeOverlay
@@ -1356,6 +1807,26 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
 
     private func updateSettingsLayout() {
         guard isViewLoaded else { return }
+#if IPHONE_APP
+        guard settingsVisible || settingsPanel.superview != nil else { return }
+        let selectedIndex = settingsTabs.selectedSegmentIndex
+        if phoneSettingsBackButton.isHidden == false {
+            let preferredHeight: CGFloat
+            switch selectedIndex {
+            case 1: preferredHeight = 500
+            case 2:
+                let directoryHeight = max(220, min(340, view.bounds.height * 0.38))
+                smbDirectoryHeightConstraint?.constant = smbConnection == nil ? 120 : directoryHeight
+                // Reserve room below the SMB content for the status label.
+                // The SMB form itself remains scrollable within this viewport.
+                preferredHeight = max(460, view.bounds.height - 210)
+            case 3, 4: preferredHeight = 500
+            default: preferredHeight = 420
+            }
+            settingsContentHeightConstraint?.constant = preferredHeight
+        }
+        return
+#else
         let smbTabActive = settingsTabs.selectedSegmentIndex == 2
         let connectedSMB = smbConnection != nil
         let landscape = view.bounds.width > view.bounds.height
@@ -1376,6 +1847,7 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
             settingsContentHeightConstraint?.constant = 335
             smbDirectoryHeightConstraint?.constant = 80
         }
+#endif
     }
 
     private func scheduleNextPhotoTimer() {
@@ -2609,7 +3081,11 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
 
     @objc private func togglePlayback() {
         isPlaying.toggle()
+#if IPHONE_APP
+        configurePlayPauseButtonForPhone()
+#else
         playPauseButton.setTitle(isPlaying ? "Pause" : "Play", for: .normal)
+#endif
         if isPlaying && currentPhotoReadyForTiming {
             scheduleNextPhotoTimer()
             schedulePanelsAutoHide(reset: true)
@@ -2769,6 +3245,11 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
 
     @objc private func toggleSettings() {
         view.endEditing(true)
+#if IPHONE_APP
+        if !settingsVisible {
+            showPhoneSettingsMainMenu()
+        }
+#endif
         setSettingsVisible(!settingsVisible)
     }
 

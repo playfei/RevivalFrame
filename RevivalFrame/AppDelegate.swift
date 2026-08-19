@@ -18,10 +18,19 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
 
         let window = UIWindow(frame: UIScreen.main.bounds)
         window.backgroundColor = .black
-        window.rootViewController = ViewController()
+#if IPHONE_APP
+        let storyboardName = "iPhoneMain"
+#else
+        let storyboardName = "Main"
+#endif
+        let storyboard = UIStoryboard(name: storyboardName, bundle: nil)
+        guard let rootViewController = storyboard.instantiateInitialViewController() else {
+            fatalError("Unable to load initial view controller from \(storyboardName).storyboard")
+        }
+        window.rootViewController = rootViewController
         window.makeKeyAndVisible()
         self.window = window
-        NSLog("RevivalFrame startup: root ViewController installed")
+        NSLog("RevivalFrame startup: %@ root view controller installed", storyboardName)
 
         return true
     }
