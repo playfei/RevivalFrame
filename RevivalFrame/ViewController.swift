@@ -1324,9 +1324,10 @@ class ViewController: UIViewController, UITextViewDelegate, UIGestureRecognizerD
         smbDirectoryHeightConstraint?.isActive = false
 #if IPHONE_APP
         // Keep the directory tree inside the visible phone viewport. Additional
-        // directories scroll inside the table instead of growing the page.
+        // directories scroll inside the table instead of growing the page. Use
+        // the same height before and after connecting so the layout never jumps.
         let availableDirectoryHeight = max(220, min(340, view.bounds.height * 0.38))
-        smbDirectoryHeightConstraint = smbDirectoryTableView.heightAnchor.constraint(equalToConstant: connected ? availableDirectoryHeight : 120)
+        smbDirectoryHeightConstraint = smbDirectoryTableView.heightAnchor.constraint(equalToConstant: availableDirectoryHeight)
 #else
         smbDirectoryHeightConstraint = smbDirectoryTableView.heightAnchor.constraint(equalToConstant: connected ? 260 : 80)
 #endif
@@ -1816,7 +1817,7 @@ class ViewController: UIViewController, UITextViewDelegate, UIGestureRecognizerD
             case 1: preferredHeight = 500
             case 2:
                 let directoryHeight = max(220, min(340, view.bounds.height * 0.38))
-                smbDirectoryHeightConstraint?.constant = smbConnection == nil ? 120 : directoryHeight
+                smbDirectoryHeightConstraint?.constant = directoryHeight
                 // Reserve room below the SMB content for the status label.
                 // The SMB form itself remains scrollable within this viewport.
                 preferredHeight = max(460, view.bounds.height - 210)
