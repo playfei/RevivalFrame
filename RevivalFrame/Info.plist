@@ -7,5 +7,7 @@
 		<key>NSAllowsArbitraryLoads</key>
 		<true/>
 	</dict>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>RevivalFrame needs access to your photo library so you can play local photos and albums as a digital photo frame.</string>
 </dict>
 </plist>
