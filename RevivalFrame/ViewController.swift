@@ -62,10 +62,13 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
     private let detailLabel = UILabel()
     private let bottomPanel = UIVisualEffectView(effect: UIBlurEffect(style: .dark))
     private let playPauseButton = UIButton(type: .system)
+    private let memoryButton = UIButton(type: .system)
     private let summaryLabel = UILabel()
     private let deferredLoadingLabel = UILabel()
     private let dateTimeOverlayLabel = UILabel()
     private let exifOverlayLabel = UILabel()
+    private let memoryYearsLabel = UILabel()
+    private let memorySideButton = UIButton(type: .system)
     private let settingsPanel = UIVisualEffectView(effect: UIBlurEffect(style: .extraLight))
     private let settingsTabsScrollView = UIScrollView()
     private let settingsTabs = UISegmentedControl(items: ["Presets", "Immich", "SMB", "WebDAV", "Photos", "Playback", "Display", "About"])
@@ -116,11 +119,19 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
     private let smbLoader = SMBPhotoLoader()
     private let webDAVLoader = WebDAVPhotoLoader()
     private var photos: [FramePhoto] = FramePhoto.presets()
+    private var sourcePhotos: [FramePhoto] = FramePhoto.presets()
+    private var memoryPhotos: [FramePhoto] = []
+    private var isMemoryMode = false
+    private var memoryScanWorkItem: DispatchWorkItem?
+    private var memoryScanID = UUID()
+    private var memoryDayCheckTimer: Timer?
+    private var lastMemoryScanDayKey: String?
     private var currentIndex = 0
     private var requestedIndex = 0
     private var isPlaying = true
     private var timer: Timer?
     private var panelsAutoHideTimer: Timer?
+    private var memorySideButtonAutoHideTimer: Timer?
     private var panelsVisible = true
     private var settingsVisible = false
     private var sourceType: PhotoSourceType = .presets
@@ -296,6 +307,7 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
         NSLog("RevivalFrame startup: first photo requested")
         updatePlaybackSummary()
         restoreLastSourceIfNeeded()
+        startMemoryDayMonitoring()
         NSLog("RevivalFrame startup: ViewController viewDidLoad end")
     }
 
@@ -303,11 +315,18 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
         super.viewDidDisappear(animated)
         timer?.invalidate()
         panelsAutoHideTimer?.invalidate()
+        memorySideButtonAutoHideTimer?.invalidate()
+        memoryDayCheckTimer?.invalidate()
         smbApplyTimeoutTimer?.invalidate()
         downloadRateTimer?.invalidate()
         dateTimeTimer?.invalidate()
+        memoryScanWorkItem?.cancel()
         downloadRateTimer = nil
         dateTimeTimer = nil
+        memorySideButtonAutoHideTimer = nil
+        memoryDayCheckTimer = nil
+        memoryScanWorkItem = nil
+        NotificationCenter.default.removeObserver(self, name: UIApplication.willEnterForegroundNotification, object: nil)
         stopDeferredLoadingIndicator()
     }
 
@@ -376,6 +395,7 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
         buildBottomPanel()
         buildDeferredLoadingLabel()
         buildDisplayOverlays()
+        buildMemoryOverlays()
         buildSettingsPanel()
 
         NSLayoutConstraint.activate([
@@ -451,6 +471,45 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
         updateDisplayOverlaysVisibility(animated: false)
     }
 
+    private func buildMemoryOverlays() {
+        memoryYearsLabel.translatesAutoresizingMaskIntoConstraints = false
+        memoryYearsLabel.font = UIFont.systemFont(ofSize: 26, weight: .regular)
+        memoryYearsLabel.textColor = UIColor(white: 1, alpha: 0.9)
+        memoryYearsLabel.textAlignment = .right
+        memoryYearsLabel.shadowColor = UIColor(white: 0, alpha: 0.62)
+        memoryYearsLabel.shadowOffset = CGSize(width: 0, height: 1)
+        memoryYearsLabel.alpha = 0
+        memoryYearsLabel.isHidden = true
+        view.addSubview(memoryYearsLabel)
+
+        memorySideButton.translatesAutoresizingMaskIntoConstraints = false
+        memorySideButton.setTitle("M", for: .normal)
+        memorySideButton.accessibilityLabel = "Play Memory"
+        memorySideButton.addTarget(self, action: #selector(startMemoryMode), for: .touchUpInside)
+        memorySideButton.setTitleColor(.white, for: .normal)
+        memorySideButton.titleLabel?.font = UIFont.systemFont(ofSize: 28, weight: .bold)
+        memorySideButton.backgroundColor = UIColor(red: 0.0, green: 0.48, blue: 1.0, alpha: 0.72)
+        memorySideButton.layer.cornerRadius = 28
+        memorySideButton.layer.shadowColor = UIColor.black.cgColor
+        memorySideButton.layer.shadowOpacity = 0.28
+        memorySideButton.layer.shadowRadius = 12
+        memorySideButton.layer.shadowOffset = CGSize(width: 0, height: 4)
+        memorySideButton.alpha = 0
+        memorySideButton.isHidden = true
+        view.addSubview(memorySideButton)
+
+        NSLayoutConstraint.activate([
+            memoryYearsLabel.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -22),
+            memoryYearsLabel.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 24),
+            memoryYearsLabel.leadingAnchor.constraint(greaterThanOrEqualTo: view.safeAreaLayoutGuide.leadingAnchor, constant: 24),
+
+            memorySideButton.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -18),
+            memorySideButton.centerYAnchor.constraint(equalTo: view.safeAreaLayoutGuide.centerYAnchor),
+            memorySideButton.widthAnchor.constraint(equalToConstant: 56),
+            memorySideButton.heightAnchor.constraint(equalToConstant: 56)
+        ])
+    }
+
     private func buildTopPanel() {
         topPanel.translatesAutoresizingMaskIntoConstraints = false
         topPanel.layer.cornerRadius = 14
@@ -502,6 +561,10 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
         styleControlButton(playPauseButton)
         let nextButton = makeControlButton(title: "Next", action: #selector(nextPhoto))
         let shuffleButton = makeControlButton(title: "Shuffle", action: #selector(shufflePhoto))
+        memoryButton.setTitle("Memory", for: .normal)
+        memoryButton.addTarget(self, action: #selector(toggleMemoryMode), for: .touchUpInside)
+        styleControlButton(memoryButton)
+        memoryButton.isHidden = true
 
         summaryLabel.font = UIFont.systemFont(ofSize: 13, weight: .regular)
         summaryLabel.textColor = UIColor(white: 0.84, alpha: 1)
@@ -512,6 +575,7 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
             playPauseButton,
             nextButton,
             shuffleButton,
+            memoryButton,
             summaryLabel
         ])
         bottomStack.axis = .horizontal
@@ -1705,16 +1769,23 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
     }
 
     private func applyPhotos(_ newPhotos: [FramePhoto], source: PhotoSourceType, status: String) {
+        cancelMemoryScan()
         cancelRemoteImageLoads()
         localPhotoManager.stopCachingImagesForAllAssets()
         sourceType = source
-        photos = newPhotos.isEmpty ? FramePhoto.presets() : newPhotos
+        sourcePhotos = newPhotos.isEmpty ? FramePhoto.presets() : newPhotos
+        photos = sourcePhotos
+        memoryPhotos = []
+        isMemoryMode = false
+        updateMemoryButton()
+        updateMemoryYearsOverlay(for: nil, animated: false)
         currentIndex = 0
         requestedIndex = 0
         resetRandomQueue()
         statusLabel.text = status
         showPhoto(at: 0, animated: true)
         updatePlaybackSummary()
+        scheduleMemoryScanIfNeeded()
     }
 
     private func showPhoto(at index: Int, animated: Bool, allowLoadingPlaceholder: Bool = true, updateDetailImmediately: Bool = false) {
@@ -1856,8 +1927,10 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
     private func updateDetailLabel(for index: Int) {
         guard photos.indices.contains(index) else { return }
         let photo = photos[index]
-        detailLabel.text = "\(sourceType.title) | \(index + 1) of \(photos.count) | \(photo.title)"
+        let sourceTitle = isMemoryMode ? "\(sourceType.title) Memory" : sourceType.title
+        detailLabel.text = "\(sourceTitle) | \(index + 1) of \(photos.count) | \(photo.title)"
         updateEXIFOverlay(for: photo)
+        updateMemoryYearsOverlay(for: photo, animated: true)
     }
 
     private func startDeferredLoadingIndicator() {
@@ -2697,8 +2770,231 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
     }
 
     private func updatePlaybackSummary() {
-        summaryLabel.text = "\(sourceType.title) | \(transitionMode.title) | \(playbackOrder.title) | \(Int(interval))s"
+        let sourceTitle = isMemoryMode ? "\(sourceType.title) Memory" : sourceType.title
+        summaryLabel.text = "\(sourceTitle) | \(transitionMode.title) | \(playbackOrder.title) | \(Int(interval))s"
         intervalValueLabel.text = "\(Int(interval))s"
+    }
+
+    private func scheduleMemoryScanIfNeeded() {
+        guard sourceType == .immich || sourceType == .localPhotos else { return }
+        lastMemoryScanDayKey = currentMemoryDayKey()
+        let scanID = UUID()
+        memoryScanID = scanID
+        let photosToScan = sourcePhotos
+        let workItem = DispatchWorkItem { [weak self] in
+            let matches = self?.memoryMatches(in: photosToScan) ?? []
+            DispatchQueue.main.async {
+                guard let self = self,
+                      self.memoryScanID == scanID,
+                      self.memoryScanWorkItem?.isCancelled == false else {
+                    return
+                }
+                self.memoryPhotos = matches
+                self.updateMemoryButton()
+                if !matches.isEmpty, !self.settingsVisible {
+                    self.statusLabel.text = "\(matches.count) memory photo(s) found for today."
+                }
+            }
+        }
+        memoryScanWorkItem = workItem
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 8, execute: workItem)
+    }
+
+    private func cancelMemoryScan() {
+        memoryScanWorkItem?.cancel()
+        memoryScanWorkItem = nil
+        memoryScanID = UUID()
+    }
+
+    private func startMemoryDayMonitoring() {
+        lastMemoryScanDayKey = currentMemoryDayKey()
+        memoryDayCheckTimer?.invalidate()
+        memoryDayCheckTimer = Timer.scheduledTimer(withTimeInterval: 300, repeats: true) { [weak self] _ in
+            self?.checkMemoryDayRollover()
+        }
+        NotificationCenter.default.removeObserver(self, name: UIApplication.willEnterForegroundNotification, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(appWillEnterForeground), name: UIApplication.willEnterForegroundNotification, object: nil)
+    }
+
+    @objc private func appWillEnterForeground() {
+        checkMemoryDayRollover()
+    }
+
+    private func checkMemoryDayRollover() {
+        let dayKey = currentMemoryDayKey()
+        guard lastMemoryScanDayKey != dayKey else { return }
+        handleMemoryDayChanged(to: dayKey)
+    }
+
+    private func handleMemoryDayChanged(to dayKey: String) {
+        lastMemoryScanDayKey = dayKey
+        cancelMemoryScan()
+        memoryPhotos = []
+        memorySideButtonAutoHideTimer?.invalidate()
+        memorySideButtonAutoHideTimer = nil
+        if isMemoryMode {
+            isMemoryMode = false
+            photos = sourcePhotos
+            currentIndex = 0
+            requestedIndex = 0
+            resetRandomQueue()
+            updatePlaybackSummary()
+            if !photos.isEmpty {
+                showPhoto(at: 0, animated: true, allowLoadingPlaceholder: true, updateDetailImmediately: true)
+            }
+        }
+        updateMemoryButton()
+        hideMemorySideButton(animated: true)
+        updateMemoryYearsOverlay(for: nil, animated: true)
+        scheduleMemoryScanIfNeeded()
+    }
+
+    private func currentMemoryDayKey() -> String {
+        let components = Calendar.current.dateComponents([.year, .month, .day], from: Date())
+        return String(format: "%04d-%02d-%02d", components.year ?? 0, components.month ?? 0, components.day ?? 0)
+    }
+
+    private func memoryMatches(in candidatePhotos: [FramePhoto]) -> [FramePhoto] {
+        let calendar = Calendar.current
+        let today = Date()
+        let todayComponents = calendar.dateComponents([.month, .day, .year], from: today)
+        guard let todayMonth = todayComponents.month,
+              let todayDay = todayComponents.day,
+              let currentYear = todayComponents.year else {
+            return []
+        }
+        return candidatePhotos.filter { photo in
+            guard let date = photo.captureDate else { return false }
+            let components = calendar.dateComponents([.month, .day, .year], from: date)
+            return components.month == todayMonth &&
+                components.day == todayDay &&
+                (components.year ?? currentYear) < currentYear
+        }
+    }
+
+    private func updateMemoryButton() {
+        memoryButton.isHidden = memoryPhotos.isEmpty && !isMemoryMode
+        memoryButton.backgroundColor = isMemoryMode ? UIColor(red: 0.0, green: 0.48, blue: 1.0, alpha: 0.55) : UIColor(white: 1, alpha: 0.14)
+        memoryButton.setTitle(isMemoryMode ? "All Photos" : "Memory", for: .normal)
+        updateMemorySideButton(animated: true, resetAutoHide: true)
+    }
+
+    @objc private func toggleMemoryMode() {
+        guard isMemoryMode || !memoryPhotos.isEmpty else { return }
+        if isMemoryMode {
+            leaveMemoryMode()
+        } else {
+            enterMemoryMode()
+        }
+    }
+
+    @objc private func startMemoryMode() {
+        guard !isMemoryMode, !memoryPhotos.isEmpty else { return }
+        enterMemoryMode()
+    }
+
+    private func enterMemoryMode() {
+        timer?.invalidate()
+        stopDeferredLoadingIndicator()
+        isMemoryMode = true
+        photos = memoryPhotos
+        currentIndex = 0
+        requestedIndex = 0
+        resetRandomQueue()
+        updateMemoryButton()
+        updatePlaybackSummary()
+        statusLabel.text = "Showing \(memoryPhotos.count) memory photo(s) from today in past years."
+        showPhoto(at: 0, animated: true, allowLoadingPlaceholder: true, updateDetailImmediately: true)
+    }
+
+    private func leaveMemoryMode() {
+        timer?.invalidate()
+        stopDeferredLoadingIndicator()
+        isMemoryMode = false
+        photos = sourcePhotos
+        currentIndex = 0
+        requestedIndex = 0
+        resetRandomQueue()
+        updateMemoryButton()
+        updatePlaybackSummary()
+        updateMemoryYearsOverlay(for: nil, animated: true)
+        statusLabel.text = "Returned to \(sourcePhotos.count) source photo(s)."
+        showPhoto(at: 0, animated: true, allowLoadingPlaceholder: true, updateDetailImmediately: true)
+    }
+
+    private func updateMemoryYearsOverlay(for photo: FramePhoto?, animated: Bool) {
+        guard isMemoryMode,
+              let date = photo?.captureDate,
+              let photoYear = Calendar.current.dateComponents([.year], from: date).year,
+              let currentYear = Calendar.current.dateComponents([.year], from: Date()).year,
+              currentYear > photoYear else {
+            setMemoryYearsOverlayVisible(false, animated: animated)
+            return
+        }
+        let years = currentYear - photoYear
+        memoryYearsLabel.text = years == 1 ? "1 year ago" : "\(years) years ago"
+        setMemoryYearsOverlayVisible(true, animated: animated)
+    }
+
+    private func setMemoryYearsOverlayVisible(_ visible: Bool, animated: Bool) {
+        memoryYearsLabel.isHidden = !visible && memoryYearsLabel.alpha == 0
+        let changes = {
+            self.memoryYearsLabel.alpha = visible ? 1 : 0
+        }
+        if animated {
+            UIView.animate(withDuration: 0.25, animations: changes) { _ in
+                self.memoryYearsLabel.isHidden = !visible
+            }
+        } else {
+            changes()
+            memoryYearsLabel.isHidden = !visible
+        }
+    }
+
+    private func updateMemorySideButton(animated: Bool, resetAutoHide: Bool = false) {
+        let visible = !memoryPhotos.isEmpty && !isMemoryMode && !settingsVisible
+        if !visible || resetAutoHide {
+            memorySideButtonAutoHideTimer?.invalidate()
+            memorySideButtonAutoHideTimer = nil
+        }
+        memorySideButton.isHidden = !visible && memorySideButton.alpha == 0
+        let changes = {
+            self.memorySideButton.alpha = visible ? 1 : 0
+        }
+        if animated {
+            UIView.animate(withDuration: 0.25, animations: changes) { _ in
+                self.memorySideButton.isHidden = !visible
+            }
+        } else {
+            changes()
+            memorySideButton.isHidden = !visible
+        }
+        if visible && resetAutoHide {
+            scheduleMemorySideButtonAutoHide()
+        }
+    }
+
+    private func scheduleMemorySideButtonAutoHide() {
+        memorySideButtonAutoHideTimer?.invalidate()
+        memorySideButtonAutoHideTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: false) { [weak self] _ in
+            self?.hideMemorySideButton(animated: true)
+        }
+    }
+
+    private func hideMemorySideButton(animated: Bool) {
+        memorySideButtonAutoHideTimer?.invalidate()
+        memorySideButtonAutoHideTimer = nil
+        let changes = {
+            self.memorySideButton.alpha = 0
+        }
+        if animated {
+            UIView.animate(withDuration: 0.25, animations: changes) { _ in
+                self.memorySideButton.isHidden = true
+            }
+        } else {
+            changes()
+            memorySideButton.isHidden = true
+        }
     }
 
     private func updateDateTimeOverlayText() {
@@ -2987,13 +3283,18 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
         }, completion: { _ in
             self.settingsPanel.isHidden = !visible
             self.updateDisplayOverlaysVisibility(animated: true)
+            self.updateMemorySideButton(animated: true)
         })
         updateDisplayOverlaysVisibility(animated: true)
+        updateMemorySideButton(animated: true)
     }
 
     func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
         let point = touch.location(in: view)
         if topPanel.frame.contains(point) || bottomPanel.frame.contains(point) {
+            return false
+        }
+        if !memorySideButton.isHidden && memorySideButton.frame.contains(point) {
             return false
         }
         if settingsVisible && settingsPanel.frame.contains(point) {
@@ -3093,6 +3394,11 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
             changes()
         }
         updateDisplayOverlaysVisibility(animated: animated)
+        if visible {
+            updateMemorySideButton(animated: animated, resetAutoHide: true)
+        } else {
+            hideMemorySideButton(animated: animated)
+        }
 
         if visible && rescheduleAutoHide {
             schedulePanelsAutoHide(reset: true)
@@ -3336,7 +3642,7 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
         assets.enumerateObjects { asset, index, _ in
             let filename = PHAssetResource.assetResources(for: asset).first?.originalFilename
             let title = filename?.isEmpty == false ? filename! : "Local Photo \(index + 1)"
-            result.append(FramePhoto(title: title, image: nil, remoteURL: nil, imageName: nil, localAssetIdentifier: asset.localIdentifier))
+            result.append(FramePhoto(title: title, image: nil, remoteURL: nil, imageName: nil, localAssetIdentifier: asset.localIdentifier, captureDate: asset.creationDate))
         }
         return result
     }
@@ -3351,7 +3657,7 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
                 seenIdentifiers.insert(asset.localIdentifier)
                 let filename = PHAssetResource.assetResources(for: asset).first?.originalFilename
                 let title = filename?.isEmpty == false ? filename! : "Local Photo \(result.count + 1)"
-                result.append(FramePhoto(title: title, image: nil, remoteURL: nil, imageName: nil, localAssetIdentifier: asset.localIdentifier))
+                result.append(FramePhoto(title: title, image: nil, remoteURL: nil, imageName: nil, localAssetIdentifier: asset.localIdentifier, captureDate: asset.creationDate))
             }
         }
         return result
@@ -3375,7 +3681,14 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
                 guard let self = self else { return }
                 switch result {
                 case .success(let album):
-                    let photos = album.photoURLs.map { FramePhoto(title: $0.lastPathComponent.isEmpty ? $0.absoluteString : $0.lastPathComponent, image: nil, remoteURL: $0) }
+                    let photos = album.photos.map {
+                        FramePhoto(
+                            title: $0.title,
+                            image: nil,
+                            remoteURL: $0.url,
+                            captureDate: $0.captureDate
+                        )
+                    }
                     let prefix = automatic ? "Restored" : "Loaded"
                     self.applyPhotos(photos, source: .immich, status: "\(prefix) \(photos.count) of \(album.assetCount) Immich photo(s).")
                 case .failure(let error):
@@ -4248,13 +4561,15 @@ private struct FramePhoto {
     let remoteURL: URL?
     let imageName: String?
     let localAssetIdentifier: String?
+    let captureDate: Date?
 
-    init(title: String, image: UIImage?, remoteURL: URL?, imageName: String? = nil, localAssetIdentifier: String? = nil) {
+    init(title: String, image: UIImage?, remoteURL: URL?, imageName: String? = nil, localAssetIdentifier: String? = nil, captureDate: Date? = nil) {
         self.title = title
         self.image = image
         self.remoteURL = remoteURL
         self.imageName = imageName
         self.localAssetIdentifier = localAssetIdentifier
+        self.captureDate = captureDate
     }
 
     static func presets() -> [FramePhoto] {
@@ -4741,7 +5056,13 @@ private extension String {
 private struct ImmichAlbum {
     let name: String
     let assetCount: Int
-    let photoURLs: [URL]
+    let photos: [ImmichPhoto]
+}
+
+private struct ImmichPhoto {
+    let title: String
+    let url: URL
+    let captureDate: Date?
 }
 
 private enum ImmichError: LocalizedError {
@@ -4778,6 +5099,9 @@ private final class ImmichShareClient {
         struct Asset: Decodable {
             let id: String
             let type: String
+            let originalFileName: String?
+            let fileCreatedAt: String?
+            let localDateTime: String?
         }
         let albumName: String?
         let assetCount: Int?
@@ -4838,10 +5162,10 @@ private final class ImmichShareClient {
                 completion(.failure(error))
             case .success(let album):
                 if let assets = album.assets, !assets.isEmpty {
-                    let photoURLs = assets
+                    let photos = assets
                         .filter { $0.type == "IMAGE" }
-                        .map { parsed.originalURL(assetId: $0.id) }
-                    self.completeAlbum(name: album.albumName ?? fallbackName, assetCount: album.assetCount ?? fallbackAssetCount, photoURLs: photoURLs, completion: completion)
+                        .map { self.immichPhoto(from: $0, parsed: parsed) }
+                    self.completeAlbum(name: album.albumName ?? fallbackName, assetCount: album.assetCount ?? fallbackAssetCount, photos: photos, completion: completion)
                     return
                 }
                 self.loadAlbumAssets(parsed: parsed, albumId: albumId, albumName: album.albumName ?? fallbackName, assetCount: album.assetCount ?? fallbackAssetCount, completion: completion)
@@ -4860,24 +5184,58 @@ private final class ImmichShareClient {
             case .failure(let error):
                 completion(.failure(error))
             case .success(let search):
-                let photoURLs = search.assets.items
+                let photos = search.assets.items
                     .filter { $0.type == "IMAGE" }
-                    .map { parsed.originalURL(assetId: $0.id) }
-                self.completeAlbum(name: albumName, assetCount: assetCount ?? search.assets.total ?? search.assets.count, photoURLs: photoURLs, completion: completion)
+                    .map { self.immichPhoto(from: $0, parsed: parsed) }
+                self.completeAlbum(name: albumName, assetCount: assetCount ?? search.assets.total ?? search.assets.count, photos: photos, completion: completion)
             }
         }
     }
 
-    private func completeAlbum(name: String?, assetCount: Int?, photoURLs: [URL], completion: @escaping (Result<ImmichAlbum, Error>) -> Void) {
-        guard !photoURLs.isEmpty else {
+    private func completeAlbum(name: String?, assetCount: Int?, photos: [ImmichPhoto], completion: @escaping (Result<ImmichAlbum, Error>) -> Void) {
+        guard !photos.isEmpty else {
             completion(.failure(ImmichError.noPhotos))
             return
         }
         completion(.success(ImmichAlbum(
             name: name ?? "Immich album",
-            assetCount: assetCount ?? photoURLs.count,
-            photoURLs: photoURLs
+            assetCount: assetCount ?? photos.count,
+            photos: photos
         )))
+    }
+
+    private func immichPhoto(from asset: AlbumResponse.Asset, parsed: ParsedImmichShare) -> ImmichPhoto {
+        let url = parsed.originalURL(assetId: asset.id)
+        let title = asset.originalFileName?.isEmpty == false ? asset.originalFileName! : (url.lastPathComponent.isEmpty ? url.absoluteString : url.lastPathComponent)
+        return ImmichPhoto(
+            title: title,
+            url: url,
+            captureDate: parseImmichDate(asset.localDateTime) ?? parseImmichDate(asset.fileCreatedAt)
+        )
+    }
+
+    private func parseImmichDate(_ value: String?) -> Date? {
+        guard let value = value, !value.isEmpty else { return nil }
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let date = formatter.date(from: value) {
+            return date
+        }
+        formatter.formatOptions = [.withInternetDateTime]
+        if let date = formatter.date(from: value) {
+            return date
+        }
+
+        let dateFormatter = DateFormatter()
+        dateFormatter.locale = Locale(identifier: "en_US_POSIX")
+        dateFormatter.timeZone = TimeZone.current
+        for format in ["yyyy-MM-dd'T'HH:mm:ss.SSS", "yyyy-MM-dd'T'HH:mm:ss"] {
+            dateFormatter.dateFormat = format
+            if let date = dateFormatter.date(from: value) {
+                return date
+            }
+        }
+        return nil
     }
 
     private func getJSON<T: Decodable>(_ url: URL, completion: @escaping (Result<T, Error>) -> Void) {
