@@ -473,9 +473,10 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
 
     private func buildMemoryOverlays() {
         memoryYearsLabel.translatesAutoresizingMaskIntoConstraints = false
-        memoryYearsLabel.font = UIFont.systemFont(ofSize: 26, weight: .regular)
+        memoryYearsLabel.font = UIFont.systemFont(ofSize: 64, weight: .bold)
         memoryYearsLabel.textColor = UIColor(white: 1, alpha: 0.9)
         memoryYearsLabel.textAlignment = .right
+        memoryYearsLabel.numberOfLines = 2
         memoryYearsLabel.shadowColor = UIColor(white: 0, alpha: 0.62)
         memoryYearsLabel.shadowOffset = CGSize(width: 0, height: 1)
         memoryYearsLabel.alpha = 0
@@ -2932,7 +2933,8 @@ final class ViewController: UIViewController, UITextViewDelegate, UIGestureRecog
             return
         }
         let years = currentYear - photoYear
-        memoryYearsLabel.text = years == 1 ? "1 year ago" : "\(years) years ago"
+        let yearText = years == 1 ? "1 year" : "\(years) years"
+        memoryYearsLabel.text = "\(yearText) ago today..."
         setMemoryYearsOverlayVisible(true, animated: animated)
     }
 
