@@ -1,17 +1,22 @@
 import UIKit
 import ImageIO
 import CoreLocation
+import Photos
 
 private enum PhotoSourceType {
     case presets
     case immich
     case smb
+    case localPhotos
+    case webDAV
 
     var title: String {
         switch self {
         case .presets: return "Presets"
         case .immich: return "Immich"
         case .smb: return "SMB"
+        case .localPhotos: return "Photos"
+        case .webDAV: return "WebDAV"
         }
     }
 }
@@ -57,16 +62,19 @@ class ViewController: UIViewController, UITextViewDelegate, UIGestureRecognizerD
     private let detailLabel = UILabel()
     private let bottomPanel = UIVisualEffectView(effect: UIBlurEffect(style: .dark))
     private let playPauseButton = UIButton(type: .system)
+    private let memoryButton = UIButton(type: .system)
     private let summaryLabel = UILabel()
     private let deferredLoadingLabel = UILabel()
     private let dateTimeOverlayLabel = UILabel()
     private let exifOverlayLabel = UILabel()
+    private let memoryYearsLabel = UILabel()
+    private let memorySideButton = UIButton(type: .system)
     private let settingsPanel = UIVisualEffectView(effect: UIBlurEffect(style: .extraLight))
     private let settingsTabsScrollView = UIScrollView()
-    private let settingsTabs = UISegmentedControl(items: ["Presets", "Immich", "SMB", "Playback", "Display", "About"])
+    private let settingsTabs = UISegmentedControl(items: ["Presets", "Immich", "SMB", "WebDAV", "Photos", "Playback", "Display", "About"])
     private let settingsSidebarScrollView = UIScrollView()
     private let settingsSidebarStack = UIStackView()
-    private let settingsTabTitles = ["Presets", "Immich", "SMB", "Playback", "Display", "About"]
+    private let settingsTabTitles = ["Presets", "Immich", "SMB", "WebDAV", "Photos", "Playback", "Display", "About"]
     private var settingsTabButtons: [UIButton] = []
     private let settingsContent = UIView()
     private let statusLabel = UILabel()
@@ -82,6 +90,15 @@ class ViewController: UIViewController, UITextViewDelegate, UIGestureRecognizerD
     private let smbConnectButton = UIButton(type: .system)
     private let smbBackButton = UIButton(type: .system)
     private let smbApplyButton = UIButton(type: .system)
+    private let webDAVURLField = UITextField()
+    private let webDAVUsernameField = UITextField()
+    private let webDAVPasswordField = UITextField()
+    private let webDAVDirectoryTableView = UITableView(frame: .zero, style: .plain)
+    private let webDAVPathLabel = UILabel()
+    private let webDAVConnectButton = UIButton(type: .system)
+    private let webDAVBackButton = UIButton(type: .system)
+    private let webDAVApplyButton = UIButton(type: .system)
+    private let localAlbumsTableView = UITableView(frame: .zero, style: .plain)
     private let intervalSlider = UISlider()
     private let intervalValueLabel = UILabel()
     private let transitionControl = UISegmentedControl(items: TransitionMode.all.map { $0.title })
@@ -94,17 +111,27 @@ class ViewController: UIViewController, UITextViewDelegate, UIGestureRecognizerD
     private let downloadRateLabel = UILabel()
     private let imageCache = NSCache<NSURL, UIImage>()
     private let immichClient = ImmichShareClient()
+    private let localPhotoManager = PHCachingImageManager()
 
     private let cacheSizeOptionsMB = [100, 300, 500]
     private let maxConcurrentRemoteLoads = 2
     private let prefetchWindowCount = 4
     private let smbLoader = SMBPhotoLoader()
+    private let webDAVLoader = WebDAVPhotoLoader()
     private var photos: [FramePhoto] = FramePhoto.presets()
+    private var sourcePhotos: [FramePhoto] = FramePhoto.presets()
+    private var memoryPhotos: [FramePhoto] = []
+    private var isMemoryMode = false
+    private var memoryScanWorkItem: DispatchWorkItem?
+    private var memoryScanID = UUID()
+    private var memoryDayCheckTimer: Timer?
+    private var lastMemoryScanDayKey: String?
     private var currentIndex = 0
     private var requestedIndex = 0
     private var isPlaying = true
     private var timer: Timer?
     private var panelsAutoHideTimer: Timer?
+    private var memorySideButtonAutoHideTimer: Timer?
     private var panelsVisible = true
     private var settingsVisible = false
     private var sourceType: PhotoSourceType = .presets
@@ -150,6 +177,19 @@ class ViewController: UIViewController, UITextViewDelegate, UIGestureRecognizerD
     private var smbApplyTimeoutTimer: Timer?
     private var pendingSMBApplyID: UUID?
     private var pendingSMBApplyFirstURL: URL?
+    private var webDAVConnection: WebDAVConnection?
+    private var webDAVCurrentDirectory: WebDAVDirectory?
+    private var selectedWebDAVDirectories: [URL: WebDAVDirectory] = [:]
+    private var webDAVDirectoryStack: [WebDAVDirectory] = []
+    private var isApplyingWebDAVFolder = false
+    private var activeWebDAVApplyID = UUID()
+    private var webDAVApplyTimeoutTimer: Timer?
+    private var webDAVAuthenticatedURLs = Set<URL>()
+    private var webDAVAuthHeaders: [String: String] = [:]
+    private var allPhotosAlbum: LocalPhotoAlbum?
+    private var localPhotoAlbums: [LocalPhotoAlbum] = []
+    private var iCloudSharedPhotoAlbums: [LocalPhotoAlbum] = []
+    private var selectedLocalAlbumIdentifiers = Set<String>()
     private var settingsPanelLeadingConstraint: NSLayoutConstraint?
     private var settingsPanelTrailingConstraint: NSLayoutConstraint?
     private var settingsPanelWidthConstraint: NSLayoutConstraint?
@@ -163,6 +203,14 @@ class ViewController: UIViewController, UITextViewDelegate, UIGestureRecognizerD
     private var transitionControlHeightConstraint: NSLayoutConstraint?
     private var orderControlHeightConstraint: NSLayoutConstraint?
     private var cacheSizeControlHeightConstraint: NSLayoutConstraint?
+    private var localAlbumsTableHeightConstraint: NSLayoutConstraint?
+    private var webDAVDirectoryHeightConstraint: NSLayoutConstraint?
+    private var webDAVURLFieldHeightConstraint: NSLayoutConstraint?
+    private var webDAVUsernameFieldHeightConstraint: NSLayoutConstraint?
+    private var webDAVPasswordFieldHeightConstraint: NSLayoutConstraint?
+    private var webDAVConnectButtonHeightConstraint: NSLayoutConstraint?
+    private var webDAVBackButtonHeightConstraint: NSLayoutConstraint?
+    private var webDAVApplyButtonHeightConstraint: NSLayoutConstraint?
     private var smbURLFieldHeightConstraint: NSLayoutConstraint?
     private var smbPortFieldHeightConstraint: NSLayoutConstraint?
     private var smbShareNameFieldHeightConstraint: NSLayoutConstraint?
@@ -219,6 +267,11 @@ class ViewController: UIViewController, UITextViewDelegate, UIGestureRecognizerD
         static let smbPort = "smbPort"
         static let smbShareName = "smbShareName"
         static let smbUsername = "smbUsername"
+        static let webDAVURL = "webDAVURL"
+        static let webDAVUsername = "webDAVUsername"
+        static let localPhotoAlbumIdentifier = "localPhotoAlbumIdentifier"
+        static let localPhotoAlbumIdentifiers = "localPhotoAlbumIdentifiers"
+        static let localPhotoAlbumTitle = "localPhotoAlbumTitle"
         static let transitionMode = "transitionMode"
         static let playbackOrder = "playbackOrder"
         static let interval = "interval"
@@ -263,6 +316,7 @@ class ViewController: UIViewController, UITextViewDelegate, UIGestureRecognizerD
         NSLog("RevivalFrame startup: first photo requested")
         updatePlaybackSummary()
         restoreLastSourceIfNeeded()
+        startMemoryDayMonitoring()
         NSLog("RevivalFrame startup: ViewController viewDidLoad end")
     }
 
@@ -270,11 +324,18 @@ class ViewController: UIViewController, UITextViewDelegate, UIGestureRecognizerD
         super.viewDidDisappear(animated)
         timer?.invalidate()
         panelsAutoHideTimer?.invalidate()
+        memorySideButtonAutoHideTimer?.invalidate()
+        memoryDayCheckTimer?.invalidate()
         smbApplyTimeoutTimer?.invalidate()
         downloadRateTimer?.invalidate()
         dateTimeTimer?.invalidate()
+        memoryScanWorkItem?.cancel()
         downloadRateTimer = nil
         dateTimeTimer = nil
+        memorySideButtonAutoHideTimer = nil
+        memoryDayCheckTimer = nil
+        memoryScanWorkItem = nil
+        NotificationCenter.default.removeObserver(self, name: UIApplication.willEnterForegroundNotification, object: nil)
         stopDeferredLoadingIndicator()
     }
 
@@ -343,6 +404,7 @@ class ViewController: UIViewController, UITextViewDelegate, UIGestureRecognizerD
         buildBottomPanel()
         buildDeferredLoadingLabel()
         buildDisplayOverlays()
+        buildMemoryOverlays()
         buildSettingsPanel()
 
         NSLayoutConstraint.activate([
@@ -418,6 +480,46 @@ class ViewController: UIViewController, UITextViewDelegate, UIGestureRecognizerD
         updateDisplayOverlaysVisibility(animated: false)
     }
 
+    private func buildMemoryOverlays() {
+        memoryYearsLabel.translatesAutoresizingMaskIntoConstraints = false
+        memoryYearsLabel.font = UIFont.systemFont(ofSize: 64, weight: .bold)
+        memoryYearsLabel.textColor = UIColor(white: 1, alpha: 0.9)
+        memoryYearsLabel.textAlignment = .right
+        memoryYearsLabel.numberOfLines = 2
+        memoryYearsLabel.shadowColor = UIColor(white: 0, alpha: 0.62)
+        memoryYearsLabel.shadowOffset = CGSize(width: 0, height: 1)
+        memoryYearsLabel.alpha = 0
+        memoryYearsLabel.isHidden = true
+        view.addSubview(memoryYearsLabel)
+
+        memorySideButton.translatesAutoresizingMaskIntoConstraints = false
+        memorySideButton.setTitle("M", for: .normal)
+        memorySideButton.accessibilityLabel = "Play Memory"
+        memorySideButton.addTarget(self, action: #selector(startMemoryMode), for: .touchUpInside)
+        memorySideButton.setTitleColor(.white, for: .normal)
+        memorySideButton.titleLabel?.font = UIFont.systemFont(ofSize: 28, weight: .bold)
+        memorySideButton.backgroundColor = UIColor(red: 0.0, green: 0.48, blue: 1.0, alpha: 0.72)
+        memorySideButton.layer.cornerRadius = 28
+        memorySideButton.layer.shadowColor = UIColor.black.cgColor
+        memorySideButton.layer.shadowOpacity = 0.28
+        memorySideButton.layer.shadowRadius = 12
+        memorySideButton.layer.shadowOffset = CGSize(width: 0, height: 4)
+        memorySideButton.alpha = 0
+        memorySideButton.isHidden = true
+        view.addSubview(memorySideButton)
+
+        NSLayoutConstraint.activate([
+            memoryYearsLabel.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -22),
+            memoryYearsLabel.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 24),
+            memoryYearsLabel.leadingAnchor.constraint(greaterThanOrEqualTo: view.safeAreaLayoutGuide.leadingAnchor, constant: 24),
+
+            memorySideButton.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -18),
+            memorySideButton.centerYAnchor.constraint(equalTo: view.safeAreaLayoutGuide.centerYAnchor),
+            memorySideButton.widthAnchor.constraint(equalToConstant: 56),
+            memorySideButton.heightAnchor.constraint(equalToConstant: 56)
+        ])
+    }
+
     private func buildTopPanel() {
         topPanel.translatesAutoresizingMaskIntoConstraints = false
         topPanel.layer.cornerRadius = 14
@@ -475,15 +577,21 @@ class ViewController: UIViewController, UITextViewDelegate, UIGestureRecognizerD
         playPauseButton.setTitle("Pause", for: .normal)
         let nextButton = makeControlButton(title: "Next", action: #selector(nextPhoto))
         let shuffleButton = makeControlButton(title: "Shuffle", action: #selector(shufflePhoto))
+
 #endif
         playPauseButton.addTarget(self, action: #selector(togglePlayback), for: .touchUpInside)
         styleControlButton(playPauseButton)
+
 #if IPHONE_APP
         playPauseButton.backgroundColor = .clear
         playPauseButton.layer.cornerRadius = 0
         bottomPanel.contentView.backgroundColor = .clear
 #endif
 
+        memoryButton.setTitle("Memory", for: .normal)
+        memoryButton.addTarget(self, action: #selector(toggleMemoryMode), for: .touchUpInside)
+        styleControlButton(memoryButton)
+        memoryButton.isHidden = true
         summaryLabel.font = UIFont.systemFont(ofSize: 13, weight: .regular)
         summaryLabel.textColor = UIColor(white: 0.84, alpha: 1)
         summaryLabel.numberOfLines = 1
@@ -501,6 +609,7 @@ class ViewController: UIViewController, UITextViewDelegate, UIGestureRecognizerD
             playPauseButton,
             nextButton,
             shuffleButton,
+            memoryButton,
             summaryLabel
         ])
 #endif
@@ -1282,8 +1391,6 @@ class ViewController: UIViewController, UITextViewDelegate, UIGestureRecognizerD
             smbApplyButtonHeightConstraint?.isActive = true
         }
 
-        let connected = smbConnection != nil
-
         let formGroup = makeSettingsGroup([
             smbURLRow,
             serverDetailsRow,
@@ -1322,15 +1429,26 @@ class ViewController: UIViewController, UITextViewDelegate, UIGestureRecognizerD
             smbPasswordFieldHeightConstraint?.isActive = true
         }
         smbDirectoryHeightConstraint?.isActive = false
+
 #if IPHONE_APP
-        // Keep the directory tree inside the visible phone viewport. Additional
-        // directories scroll inside the table instead of growing the page. Use
-        // the same height before and after connecting so the layout never jumps.
-        let availableDirectoryHeight = max(220, min(340, view.bounds.height * 0.38))
-        smbDirectoryHeightConstraint = smbDirectoryTableView.heightAnchor.constraint(equalToConstant: availableDirectoryHeight)
+        // Keep the directory tree inside the visible phone viewport.
+        // Additional directories scroll inside the table instead of
+        // growing the settings page.
+        let availableDirectoryHeight = max(
+            220,
+            min(340, view.bounds.height * 0.38)
+        )
+        smbDirectoryHeightConstraint =
+            smbDirectoryTableView.heightAnchor.constraint(
+                equalToConstant: availableDirectoryHeight
+            )
 #else
-        smbDirectoryHeightConstraint = smbDirectoryTableView.heightAnchor.constraint(equalToConstant: connected ? 260 : 80)
+        smbDirectoryHeightConstraint =
+            smbDirectoryTableView.heightAnchor.constraint(
+                equalToConstant: 260
+            )
 #endif
+
         smbDirectoryHeightConstraint?.isActive = true
 
         let scrollView = UIScrollView()
@@ -1345,6 +1463,266 @@ class ViewController: UIViewController, UITextViewDelegate, UIGestureRecognizerD
         replaceSettingsContent(with: scrollView, fillVertically: true)
         smbDirectoryTableView.reloadData()
         updateSettingsLayout()
+    }
+
+    private func showLocalPhotosSettings() {
+        forceLightAppearance(localAlbumsTableView)
+        localAlbumsTableView.dataSource = self
+        localAlbumsTableView.delegate = self
+        localAlbumsTableView.backgroundColor = .white
+        localAlbumsTableView.separatorColor = settingsSeparator
+        localAlbumsTableView.layer.cornerRadius = 6
+        localAlbumsTableView.layer.borderWidth = 0.5
+        localAlbumsTableView.layer.borderColor = settingsSeparator.cgColor
+        localAlbumsTableView.clipsToBounds = true
+        localAlbumsTableView.tableFooterView = UIView()
+
+        let stack = UIStackView(arrangedSubviews: [
+            makeSettingsTitleLabel("Local photos"),
+            makeSettingsGroup([
+                makeSettingsLabel("Choose All Photos, or select one or more Local Albums and iCloud Shared Albums."),
+                localAlbumsTableView
+            ])
+        ])
+        stack.axis = .vertical
+        stack.spacing = 8
+
+        if localAlbumsTableHeightConstraint == nil {
+            localAlbumsTableHeightConstraint = localAlbumsTableView.heightAnchor.constraint(greaterThanOrEqualToConstant: 330)
+            localAlbumsTableHeightConstraint?.isActive = true
+        }
+        replaceSettingsContent(with: stack, fillVertically: true)
+        refreshLocalPhotoAlbums()
+    }
+
+    private func showWebDAVSettings() {
+        configureSMBTextField(webDAVURLField, placeholder: "https://server:5006/path/")
+        configureSMBTextField(webDAVUsernameField, placeholder: "WebDAV username")
+        configureSMBTextField(webDAVPasswordField, placeholder: "WebDAV password", secure: true)
+        webDAVURLField.keyboardType = .URL
+        webDAVURLField.text = UserDefaults.standard.string(forKey: Preferences.webDAVURL) ?? webDAVURLField.text
+        webDAVUsernameField.text = UserDefaults.standard.string(forKey: Preferences.webDAVUsername) ?? webDAVUsernameField.text
+
+        configureSettingsButton(webDAVConnectButton, title: "Connect", action: #selector(connectWebDAV))
+        configureSettingsButton(webDAVBackButton, title: "Back", action: #selector(backWebDAVDirectory))
+        configureSettingsButton(webDAVApplyButton, title: "Load", action: #selector(applySelectedWebDAVFolder))
+        updateWebDAVActionButtons()
+
+        webDAVPathLabel.font = UIFont.systemFont(ofSize: 12, weight: .regular)
+        webDAVPathLabel.textColor = settingsSecondaryText
+        webDAVPathLabel.numberOfLines = 1
+        webDAVPathLabel.lineBreakMode = .byTruncatingMiddle
+        updateWebDAVPathLabel()
+
+        forceLightAppearance(webDAVDirectoryTableView)
+        webDAVDirectoryTableView.dataSource = self
+        webDAVDirectoryTableView.delegate = self
+        webDAVDirectoryTableView.backgroundColor = .white
+        webDAVDirectoryTableView.separatorColor = settingsSeparator
+        webDAVDirectoryTableView.layer.cornerRadius = 6
+        webDAVDirectoryTableView.layer.borderWidth = 0.5
+        webDAVDirectoryTableView.layer.borderColor = settingsSeparator.cgColor
+        webDAVDirectoryTableView.clipsToBounds = true
+        webDAVDirectoryTableView.tableFooterView = UIView()
+
+        let urlLabel = makeSettingsLabel("WebDAV URL")
+        urlLabel.widthAnchor.constraint(equalToConstant: 94).isActive = true
+        let urlRow = UIStackView(arrangedSubviews: [urlLabel, webDAVURLField])
+        urlRow.axis = .horizontal
+        urlRow.alignment = .center
+        urlRow.spacing = 8
+        urlRow.heightAnchor.constraint(equalToConstant: 36).isActive = true
+
+        let credentialsRow = UIStackView(arrangedSubviews: [webDAVUsernameField, webDAVPasswordField])
+        credentialsRow.axis = .horizontal
+        credentialsRow.spacing = 8
+        credentialsRow.distribution = .fillEqually
+
+        let buttonRow = UIStackView(arrangedSubviews: [webDAVConnectButton, webDAVBackButton, webDAVApplyButton])
+        buttonRow.axis = .horizontal
+        buttonRow.spacing = 8
+        buttonRow.alignment = .center
+        buttonRow.distribution = .fillEqually
+        if webDAVConnectButtonHeightConstraint == nil {
+            webDAVConnectButtonHeightConstraint = webDAVConnectButton.heightAnchor.constraint(equalToConstant: 34)
+            webDAVBackButtonHeightConstraint = webDAVBackButton.heightAnchor.constraint(equalToConstant: 34)
+            webDAVApplyButtonHeightConstraint = webDAVApplyButton.heightAnchor.constraint(equalToConstant: 34)
+            webDAVConnectButtonHeightConstraint?.isActive = true
+            webDAVBackButtonHeightConstraint?.isActive = true
+            webDAVApplyButtonHeightConstraint?.isActive = true
+        }
+
+        let formGroup = makeSettingsGroup([
+            urlRow,
+            makeSettingsLabel("Use a full http:// or https:// WebDAV path, including port and folder when needed. Common NAS ports: HTTP 5005, HTTPS 5006. Example: https://nas.example.com:5006/photo/"),
+            makeSettingsLabel("Credentials"),
+            credentialsRow,
+            buttonRow
+        ], fillVertically: true)
+
+        let directoryGroup = makeSettingsGroup([
+            makeWebDAVDirectoryHeaderRow(),
+            webDAVPathLabel,
+            webDAVDirectoryTableView
+        ])
+
+        let stack = UIStackView(arrangedSubviews: [
+            makeSettingsTitleLabel("WebDAV source"),
+            verticalSettingsGroups([formGroup, directoryGroup])
+        ])
+        stack.axis = .vertical
+        stack.spacing = 8
+        stack.translatesAutoresizingMaskIntoConstraints = false
+
+        if webDAVURLFieldHeightConstraint == nil {
+            webDAVURLFieldHeightConstraint = webDAVURLField.heightAnchor.constraint(equalToConstant: 36)
+            webDAVUsernameFieldHeightConstraint = webDAVUsernameField.heightAnchor.constraint(equalToConstant: 36)
+            webDAVPasswordFieldHeightConstraint = webDAVPasswordField.heightAnchor.constraint(equalToConstant: 36)
+            webDAVURLFieldHeightConstraint?.isActive = true
+            webDAVUsernameFieldHeightConstraint?.isActive = true
+            webDAVPasswordFieldHeightConstraint?.isActive = true
+        }
+        webDAVDirectoryHeightConstraint?.isActive = false
+        webDAVDirectoryHeightConstraint = webDAVDirectoryTableView.heightAnchor.constraint(equalToConstant: 240)
+        webDAVDirectoryHeightConstraint?.isActive = true
+
+        let scrollView = UIScrollView()
+        scrollView.addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.leadingAnchor.constraint(equalTo: scrollView.contentLayoutGuide.leadingAnchor),
+            stack.trailingAnchor.constraint(equalTo: scrollView.contentLayoutGuide.trailingAnchor),
+            stack.topAnchor.constraint(equalTo: scrollView.contentLayoutGuide.topAnchor),
+            stack.bottomAnchor.constraint(equalTo: scrollView.contentLayoutGuide.bottomAnchor),
+            stack.widthAnchor.constraint(equalTo: scrollView.frameLayoutGuide.widthAnchor)
+        ])
+        replaceSettingsContent(with: scrollView, fillVertically: true)
+        webDAVDirectoryTableView.reloadData()
+        updateSettingsLayout()
+    }
+
+    private func makeWebDAVDirectoryHeaderRow() -> UIStackView {
+        let title = makeSettingsLabel("Connected folders")
+        title.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        let selectAllButton = makeSettingsPlainButton(title: "Select All", action: #selector(selectAllVisibleWebDAVDirectories))
+        let excludeAllButton = makeSettingsPlainButton(title: "Exclude All", action: #selector(excludeAllVisibleWebDAVDirectories))
+        selectAllButton.titleLabel?.font = UIFont.systemFont(ofSize: 13, weight: .regular)
+        excludeAllButton.titleLabel?.font = UIFont.systemFont(ofSize: 13, weight: .regular)
+        let hasVisibleFolders = (webDAVCurrentDirectory?.children.isEmpty == false) && !isApplyingWebDAVFolder
+        selectAllButton.isEnabled = hasVisibleFolders
+        excludeAllButton.isEnabled = hasVisibleFolders
+        let row = UIStackView(arrangedSubviews: [title, selectAllButton, excludeAllButton])
+        row.axis = .horizontal
+        row.alignment = .center
+        row.spacing = 8
+        return row
+    }
+
+    private func refreshLocalPhotoAlbums() {
+        let status = PHPhotoLibrary.authorizationStatus()
+        if isPhotoLibraryAuthorized(status) {
+            loadLocalPhotoAlbums()
+            return
+        }
+
+        if status == .notDetermined {
+            statusLabel.text = "Requesting Photos access..."
+            PHPhotoLibrary.requestAuthorization { [weak self] newStatus in
+                DispatchQueue.main.async {
+                    guard let self = self else { return }
+                    if self.isPhotoLibraryAuthorized(newStatus) {
+                        self.loadLocalPhotoAlbums()
+                    } else {
+                        self.clearLocalAlbumLists()
+                        self.localAlbumsTableView.reloadData()
+                        self.statusLabel.text = "Photos access is needed to use local albums."
+                    }
+                }
+            }
+        } else {
+            clearLocalAlbumLists()
+            localAlbumsTableView.reloadData()
+            statusLabel.text = "Photos access is not enabled. Allow RevivalFrame in iPad Settings > Privacy > Photos."
+        }
+    }
+
+    private func isPhotoLibraryAuthorized(_ status: PHAuthorizationStatus) -> Bool {
+        if status == .authorized {
+            return true
+        }
+        if #available(iOS 14.0, *), status == .limited {
+            return true
+        }
+        return false
+    }
+
+    private func loadLocalPhotoAlbums() {
+        let options = localPhotoFetchOptions()
+        allPhotosAlbum = LocalPhotoAlbum(identifier: nil, title: "All Photos", count: PHAsset.fetchAssets(with: .image, options: options).count, collection: nil, kind: .allPhotos)
+
+        var localAlbums: [LocalPhotoAlbum] = []
+        let collections = PHAssetCollection.fetchAssetCollections(with: .album, subtype: .any, options: nil)
+        collections.enumerateObjects { collection, _, _ in
+            guard collection.assetCollectionSubtype != .albumCloudShared else { return }
+            let count = PHAsset.fetchAssets(in: collection, options: options).count
+            guard count > 0 else { return }
+            localAlbums.append(LocalPhotoAlbum(
+                identifier: collection.localIdentifier,
+                title: collection.localizedTitle ?? "Album",
+                count: count,
+                collection: collection,
+                kind: .localAlbum
+            ))
+        }
+
+        var sharedAlbums: [LocalPhotoAlbum] = []
+        let sharedCollections = PHAssetCollection.fetchAssetCollections(with: .album, subtype: .albumCloudShared, options: nil)
+        sharedCollections.enumerateObjects { collection, _, _ in
+            let count = PHAsset.fetchAssets(in: collection, options: options).count
+            guard count > 0 else { return }
+            sharedAlbums.append(LocalPhotoAlbum(
+                identifier: collection.localIdentifier,
+                title: collection.localizedTitle ?? "Shared Album",
+                count: count,
+                collection: collection,
+                kind: .iCloudSharedAlbum
+            ))
+        }
+
+        localPhotoAlbums = localAlbums
+        iCloudSharedPhotoAlbums = sharedAlbums
+        restoreLocalAlbumSelectionIfNeeded()
+        let availableIdentifiers = Set(allSelectableLocalPhotoAlbums().compactMap { $0.identifier })
+        selectedLocalAlbumIdentifiers = selectedLocalAlbumIdentifiers.intersection(availableIdentifiers)
+        localAlbumsTableView.reloadData()
+        statusLabel.text = localPhotosSelectionStatusText()
+    }
+
+    private func clearLocalAlbumLists() {
+        allPhotosAlbum = nil
+        localPhotoAlbums = []
+        iCloudSharedPhotoAlbums = []
+    }
+
+    private func restoreLocalAlbumSelectionIfNeeded() {
+        guard selectedLocalAlbumIdentifiers.isEmpty else { return }
+        let defaults = UserDefaults.standard
+        if let savedIdentifiers = defaults.stringArray(forKey: Preferences.localPhotoAlbumIdentifiers),
+           !savedIdentifiers.isEmpty {
+            selectedLocalAlbumIdentifiers = Set(savedIdentifiers)
+            return
+        }
+
+        if let legacyIdentifier = defaults.string(forKey: Preferences.localPhotoAlbumIdentifier),
+           !legacyIdentifier.isEmpty {
+            selectedLocalAlbumIdentifiers = [legacyIdentifier]
+        }
+    }
+
+    private func localPhotosSelectionStatusText() -> String {
+        if selectedLocalAlbumIdentifiers.isEmpty {
+            return "All Photos selected."
+        }
+        return "\(selectedLocalAlbumIdentifiers.count) album(s) selected."
     }
 
     private func populateSMBFieldsFromStoredURLIfNeeded() {
@@ -1758,6 +2136,10 @@ class ViewController: UIViewController, UITextViewDelegate, UIGestureRecognizerD
                 sourceType = .immich
             } else if savedSource == PhotoSourceType.smb.title {
                 sourceType = .smb
+            } else if savedSource == PhotoSourceType.localPhotos.title {
+                sourceType = .localPhotos
+            } else if savedSource == PhotoSourceType.webDAV.title {
+                sourceType = .webDAV
             }
         }
         if defaults.object(forKey: Preferences.showDateTimeOverlay) != nil {
@@ -1784,13 +2166,14 @@ class ViewController: UIViewController, UITextViewDelegate, UIGestureRecognizerD
     }
 
     private func restoreLastSourceIfNeeded() {
-        guard sourceType == .immich,
-              let link = UserDefaults.standard.string(forKey: Preferences.immichLink),
-              !link.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            return
+        if sourceType == .immich,
+           let link = UserDefaults.standard.string(forKey: Preferences.immichLink),
+           !link.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            immichTextView.text = link
+            loadImmichFromStoredLink(link, password: "", automatic: true)
+        } else if sourceType == .localPhotos {
+            loadStoredLocalPhotoAlbum()
         }
-        immichTextView.text = link
-        loadImmichFromStoredLink(link, password: "", automatic: true)
     }
 
     private func showSelectedSettingsTab() {
@@ -1799,8 +2182,10 @@ class ViewController: UIViewController, UITextViewDelegate, UIGestureRecognizerD
         case 0: showPresetsSettings()
         case 1: showImmichSettings()
         case 2: showSMBSettings()
-        case 3: showPlaybackSettings()
-        case 4: showDisplaySettings()
+        case 3: showWebDAVSettings()
+        case 4: showLocalPhotosSettings()
+        case 5: showPlaybackSettings()
+        case 6: showDisplaySettings()
         default: showAboutSettings()
         }
         updateSettingsLayout()
@@ -1829,7 +2214,8 @@ class ViewController: UIViewController, UITextViewDelegate, UIGestureRecognizerD
         return
 #else
         let smbTabActive = settingsTabs.selectedSegmentIndex == 2
-        let connectedSMB = smbConnection != nil
+        let webDAVTabActive = settingsTabs.selectedSegmentIndex == 3
+        let photosTabActive = settingsTabs.selectedSegmentIndex == 4
         let landscape = view.bounds.width > view.bounds.height
 
         settingsPanelLeadingConstraint?.isActive = false
@@ -1838,15 +2224,27 @@ class ViewController: UIViewController, UITextViewDelegate, UIGestureRecognizerD
         settingsPanelBelowTopConstraint?.isActive = !landscape
         settingsPanelAlignedTopConstraint?.isActive = landscape
 
-        if smbTabActive && connectedSMB {
+        if smbTabActive {
             statusLabel.numberOfLines = landscape ? 2 : 3
             let availableLandscapeHeight = max(360, view.bounds.height - 170)
             settingsContentHeightConstraint?.constant = landscape ? min(500, availableLandscapeHeight) : min(560, max(420, view.bounds.height - 430))
             smbDirectoryHeightConstraint?.constant = landscape ? min(360, max(280, (settingsContentHeightConstraint?.constant ?? 420) - 125)) : min(400, max(260, (settingsContentHeightConstraint?.constant ?? 420) - 190))
+        } else if webDAVTabActive {
+            statusLabel.numberOfLines = landscape ? 2 : 3
+            let availableLandscapeHeight = max(360, view.bounds.height - 170)
+            settingsContentHeightConstraint?.constant = landscape ? min(500, availableLandscapeHeight) : min(560, max(420, view.bounds.height - 430))
+            webDAVDirectoryHeightConstraint?.constant = landscape ? min(340, max(260, (settingsContentHeightConstraint?.constant ?? 420) - 175)) : min(380, max(240, (settingsContentHeightConstraint?.constant ?? 420) - 230))
+        } else if photosTabActive {
+            statusLabel.numberOfLines = landscape ? 2 : 3
+            let availableLandscapeHeight = max(360, view.bounds.height - 170)
+            settingsContentHeightConstraint?.constant = landscape ? min(500, availableLandscapeHeight) : min(560, max(420, view.bounds.height - 430))
+            localAlbumsTableHeightConstraint?.constant = landscape ? min(360, max(300, (settingsContentHeightConstraint?.constant ?? 420) - 115)) : min(400, max(320, (settingsContentHeightConstraint?.constant ?? 420) - 140))
         } else {
             statusLabel.numberOfLines = 3
             settingsContentHeightConstraint?.constant = 335
-            smbDirectoryHeightConstraint?.constant = 80
+            smbDirectoryHeightConstraint?.constant = 260
+            webDAVDirectoryHeightConstraint?.constant = 240
+            localAlbumsTableHeightConstraint?.constant = 330
         }
 #endif
     }
@@ -1858,15 +2256,23 @@ class ViewController: UIViewController, UITextViewDelegate, UIGestureRecognizerD
     }
 
     private func applyPhotos(_ newPhotos: [FramePhoto], source: PhotoSourceType, status: String) {
+        cancelMemoryScan()
         cancelRemoteImageLoads()
+        localPhotoManager.stopCachingImagesForAllAssets()
         sourceType = source
-        photos = newPhotos.isEmpty ? FramePhoto.presets() : newPhotos
+        sourcePhotos = newPhotos.isEmpty ? FramePhoto.presets() : newPhotos
+        photos = sourcePhotos
+        memoryPhotos = []
+        isMemoryMode = false
+        updateMemoryButton()
+        updateMemoryYearsOverlay(for: nil, animated: false)
         currentIndex = 0
         requestedIndex = 0
         resetRandomQueue()
         statusLabel.text = status
         showPhoto(at: 0, animated: true)
         updatePlaybackSummary()
+        scheduleMemoryScanIfNeeded()
     }
 
     private func showPhoto(at index: Int, animated: Bool, allowLoadingPlaceholder: Bool = true, updateDetailImmediately: Bool = false) {
@@ -1903,6 +2309,38 @@ class ViewController: UIViewController, UITextViewDelegate, UIGestureRecognizerD
             updateDetailLabel(for: index)
             displayPlaybackImage(image, animated: animated)
             prefetchUpcomingPhotos(after: index)
+            return
+        }
+
+        if let localAssetIdentifier = photo.localAssetIdentifier {
+            if allowLoadingPlaceholder {
+                display(image: FramePhoto.placeholder(title: "Loading photo", subtitle: photo.title), animated: animated)
+            } else {
+                waitingForPreparedPhoto = true
+                statusLabel.text = "Preparing next photo: \(photo.title)"
+                startDeferredLoadingIndicator()
+            }
+            loadLocalPhoto(assetIdentifier: localAssetIdentifier) { [weak self] image in
+                guard let self = self else { return }
+                guard self.currentImageRequestID == requestID else { return }
+                guard let image = image else {
+                    self.waitingForPreparedPhoto = false
+                    self.stopDeferredLoadingIndicator()
+                    self.currentIndex = index
+                    self.requestedIndex = index
+                    self.updateDetailLabel(for: index)
+                    self.displayPlaybackImage(FramePhoto.placeholder(title: "Photo unavailable", subtitle: photo.title), animated: true)
+                    return
+                }
+
+                self.currentIndex = index
+                self.requestedIndex = index
+                self.waitingForPreparedPhoto = false
+                self.stopDeferredLoadingIndicator()
+                self.updateDetailLabel(for: index)
+                self.displayPlaybackImage(image, animated: true)
+                self.prefetchUpcomingPhotos(after: index)
+            }
             return
         }
 
@@ -1976,8 +2414,10 @@ class ViewController: UIViewController, UITextViewDelegate, UIGestureRecognizerD
     private func updateDetailLabel(for index: Int) {
         guard photos.indices.contains(index) else { return }
         let photo = photos[index]
-        detailLabel.text = "\(sourceType.title) | \(index + 1) of \(photos.count) | \(photo.title)"
+        let sourceTitle = isMemoryMode ? "\(sourceType.title) Memory" : sourceType.title
+        detailLabel.text = "\(sourceTitle) | \(index + 1) of \(photos.count) | \(photo.title)"
         updateEXIFOverlay(for: photo)
+        updateMemoryYearsOverlay(for: photo, animated: true)
     }
 
     private func startDeferredLoadingIndicator() {
@@ -2018,6 +2458,29 @@ class ViewController: UIViewController, UITextViewDelegate, UIGestureRecognizerD
         prepareTemporaryCacheDirectory()
     }
 
+    private func loadLocalPhoto(assetIdentifier: String, completion: @escaping (UIImage?) -> Void) {
+        let result = PHAsset.fetchAssets(withLocalIdentifiers: [assetIdentifier], options: nil)
+        guard let asset = result.firstObject else {
+            completion(nil)
+            return
+        }
+
+        let targetSize = localPhotoTargetSize()
+        let options = PHImageRequestOptions()
+        options.deliveryMode = .highQualityFormat
+        options.resizeMode = .fast
+        options.isNetworkAccessAllowed = true
+        options.isSynchronous = false
+
+        localPhotoManager.requestImage(for: asset, targetSize: targetSize, contentMode: .aspectFit, options: options) { image, info in
+            let degraded = (info?[PHImageResultIsDegradedKey] as? NSNumber)?.boolValue ?? false
+            guard !degraded else { return }
+            DispatchQueue.main.async {
+                completion(image)
+            }
+        }
+    }
+
     private func loadRemoteImage(_ url: URL, shouldDecode: Bool = true, completion: @escaping (UIImage?) -> Void) {
         if let cached = imageCache.object(forKey: url as NSURL) {
             completion(cached)
@@ -2051,11 +2514,35 @@ class ViewController: UIViewController, UITextViewDelegate, UIGestureRecognizerD
         remoteImageCompletions[url] = [completion]
         remoteImageNeedsDecode[url] = shouldDecode
         beginDownloadTracking(for: url)
-        let task = remoteDownloadSession.downloadTask(with: url)
+        let task: URLSessionDownloadTask
+        if let authHeader = webDAVAuthHeader(for: url) {
+            var request = URLRequest(url: url)
+            request.setValue(authHeader, forHTTPHeaderField: "Authorization")
+            task = remoteDownloadSession.downloadTask(with: request)
+        } else {
+            task = remoteDownloadSession.downloadTask(with: url)
+        }
         remoteTaskURLs[task.taskIdentifier] = url
         remoteImageTasks[url] = task
         task.resume()
         updateCacheStatus()
+    }
+
+    private func webDAVAuthHeader(for url: URL) -> String? {
+        guard webDAVAuthenticatedURLs.contains(url),
+              let key = webDAVAuthKey(for: url) else {
+            return nil
+        }
+        return webDAVAuthHeaders[key]
+    }
+
+    private func webDAVAuthKey(for url: URL) -> String? {
+        guard let scheme = url.scheme,
+              let host = url.host else {
+            return nil
+        }
+        let port = url.port.map { ":\($0)" } ?? ""
+        return "\(scheme.lowercased())://\(host.lowercased())\(port)"
     }
 
     func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didWriteData bytesWritten: Int64, totalBytesWritten: Int64, totalBytesExpectedToWrite: Int64) {
@@ -2197,11 +2684,57 @@ class ViewController: UIViewController, UITextViewDelegate, UIGestureRecognizerD
             return
         }
 
+        if sourceType == .localPhotos {
+            prefetchUpcomingLocalPhotos(after: index)
+            updateCacheStatus()
+            return
+        }
+
         while cachedImageBytes < cacheLimitBytes && remoteImageCompletions.count < maxConcurrentRemoteLoads {
             guard let url = nextPrefetchURL(after: index, windowCount: prefetchWindowCount) else { break }
             loadRemoteImage(url, shouldDecode: false) { _ in }
         }
         updateCacheStatus()
+    }
+
+    private func localPhotoTargetSize() -> CGSize {
+        let scale = UIScreen.main.scale
+        return CGSize(
+            width: max(view.bounds.width, 1) * scale,
+            height: max(view.bounds.height, 1) * scale
+        )
+    }
+
+    private func prefetchUpcomingLocalPhotos(after index: Int) {
+        let identifiers = nextPrefetchLocalAssetIdentifiers(after: index, windowCount: prefetchWindowCount)
+        guard !identifiers.isEmpty else { return }
+        let assets = PHAsset.fetchAssets(withLocalIdentifiers: identifiers, options: nil)
+        var assetList: [PHAsset] = []
+        assets.enumerateObjects { asset, _, _ in assetList.append(asset) }
+        guard !assetList.isEmpty else { return }
+        localPhotoManager.startCachingImages(for: assetList, targetSize: localPhotoTargetSize(), contentMode: .aspectFit, options: nil)
+    }
+
+    private func nextPrefetchLocalAssetIdentifiers(after index: Int, windowCount: Int) -> [String] {
+        guard photos.count > 1 else { return [] }
+        var identifiers: [String] = []
+        if playbackOrder == .random {
+            ensureRandomQueue()
+            for next in randomIndexQueue.prefix(windowCount) {
+                if let identifier = photos[next].localAssetIdentifier {
+                    identifiers.append(identifier)
+                }
+            }
+            return identifiers
+        }
+
+        for offset in 1...min(windowCount, photos.count - 1) {
+            let next = (index + offset) % photos.count
+            if let identifier = photos[next].localAssetIdentifier {
+                identifiers.append(identifier)
+            }
+        }
+        return identifiers
     }
 
     private func nextPrefetchURL(after index: Int, windowCount: Int) -> URL? {
@@ -2724,8 +3257,232 @@ class ViewController: UIViewController, UITextViewDelegate, UIGestureRecognizerD
     }
 
     private func updatePlaybackSummary() {
-        summaryLabel.text = "\(sourceType.title) | \(transitionMode.title) | \(playbackOrder.title) | \(Int(interval))s"
+        let sourceTitle = isMemoryMode ? "\(sourceType.title) Memory" : sourceType.title
+        summaryLabel.text = "\(sourceTitle) | \(transitionMode.title) | \(playbackOrder.title) | \(Int(interval))s"
         intervalValueLabel.text = "\(Int(interval))s"
+    }
+
+    private func scheduleMemoryScanIfNeeded() {
+        guard sourceType == .immich || sourceType == .localPhotos else { return }
+        lastMemoryScanDayKey = currentMemoryDayKey()
+        let scanID = UUID()
+        memoryScanID = scanID
+        let photosToScan = sourcePhotos
+        let workItem = DispatchWorkItem { [weak self] in
+            let matches = self?.memoryMatches(in: photosToScan) ?? []
+            DispatchQueue.main.async {
+                guard let self = self,
+                      self.memoryScanID == scanID,
+                      self.memoryScanWorkItem?.isCancelled == false else {
+                    return
+                }
+                self.memoryPhotos = matches
+                self.updateMemoryButton()
+                if !matches.isEmpty, !self.settingsVisible {
+                    self.statusLabel.text = "\(matches.count) memory photo(s) found for today."
+                }
+            }
+        }
+        memoryScanWorkItem = workItem
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 8, execute: workItem)
+    }
+
+    private func cancelMemoryScan() {
+        memoryScanWorkItem?.cancel()
+        memoryScanWorkItem = nil
+        memoryScanID = UUID()
+    }
+
+    private func startMemoryDayMonitoring() {
+        lastMemoryScanDayKey = currentMemoryDayKey()
+        memoryDayCheckTimer?.invalidate()
+        memoryDayCheckTimer = Timer.scheduledTimer(withTimeInterval: 300, repeats: true) { [weak self] _ in
+            self?.checkMemoryDayRollover()
+        }
+        NotificationCenter.default.removeObserver(self, name: UIApplication.willEnterForegroundNotification, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(appWillEnterForeground), name: UIApplication.willEnterForegroundNotification, object: nil)
+    }
+
+    @objc private func appWillEnterForeground() {
+        checkMemoryDayRollover()
+    }
+
+    private func checkMemoryDayRollover() {
+        let dayKey = currentMemoryDayKey()
+        guard lastMemoryScanDayKey != dayKey else { return }
+        handleMemoryDayChanged(to: dayKey)
+    }
+
+    private func handleMemoryDayChanged(to dayKey: String) {
+        lastMemoryScanDayKey = dayKey
+        cancelMemoryScan()
+        memoryPhotos = []
+        memorySideButtonAutoHideTimer?.invalidate()
+        memorySideButtonAutoHideTimer = nil
+        if isMemoryMode {
+            isMemoryMode = false
+            photos = sourcePhotos
+            currentIndex = 0
+            requestedIndex = 0
+            resetRandomQueue()
+            updatePlaybackSummary()
+            if !photos.isEmpty {
+                showPhoto(at: 0, animated: true, allowLoadingPlaceholder: true, updateDetailImmediately: true)
+            }
+        }
+        updateMemoryButton()
+        hideMemorySideButton(animated: true)
+        updateMemoryYearsOverlay(for: nil, animated: true)
+        scheduleMemoryScanIfNeeded()
+    }
+
+    private func currentMemoryDayKey() -> String {
+        let components = Calendar.current.dateComponents([.year, .month, .day], from: Date())
+        return String(format: "%04d-%02d-%02d", components.year ?? 0, components.month ?? 0, components.day ?? 0)
+    }
+
+    private func memoryMatches(in candidatePhotos: [FramePhoto]) -> [FramePhoto] {
+        let calendar = Calendar.current
+        let today = Date()
+        let todayComponents = calendar.dateComponents([.month, .day, .year], from: today)
+        guard let todayMonth = todayComponents.month,
+              let todayDay = todayComponents.day,
+              let currentYear = todayComponents.year else {
+            return []
+        }
+        return candidatePhotos.filter { photo in
+            guard let date = photo.captureDate else { return false }
+            let components = calendar.dateComponents([.month, .day, .year], from: date)
+            return components.month == todayMonth &&
+                components.day == todayDay &&
+                (components.year ?? currentYear) < currentYear
+        }
+    }
+
+    private func updateMemoryButton() {
+        memoryButton.isHidden = memoryPhotos.isEmpty && !isMemoryMode
+        memoryButton.backgroundColor = isMemoryMode ? UIColor(red: 0.0, green: 0.48, blue: 1.0, alpha: 0.55) : UIColor(white: 1, alpha: 0.14)
+        memoryButton.setTitle(isMemoryMode ? "All Photos" : "Memory", for: .normal)
+        updateMemorySideButton(animated: true, resetAutoHide: true)
+    }
+
+    @objc private func toggleMemoryMode() {
+        guard isMemoryMode || !memoryPhotos.isEmpty else { return }
+        if isMemoryMode {
+            leaveMemoryMode()
+        } else {
+            enterMemoryMode()
+        }
+    }
+
+    @objc private func startMemoryMode() {
+        guard !isMemoryMode, !memoryPhotos.isEmpty else { return }
+        enterMemoryMode()
+    }
+
+    private func enterMemoryMode() {
+        timer?.invalidate()
+        stopDeferredLoadingIndicator()
+        isMemoryMode = true
+        photos = memoryPhotos
+        currentIndex = 0
+        requestedIndex = 0
+        resetRandomQueue()
+        updateMemoryButton()
+        updatePlaybackSummary()
+        statusLabel.text = "Showing \(memoryPhotos.count) memory photo(s) from today in past years."
+        showPhoto(at: 0, animated: true, allowLoadingPlaceholder: true, updateDetailImmediately: true)
+    }
+
+    private func leaveMemoryMode() {
+        timer?.invalidate()
+        stopDeferredLoadingIndicator()
+        isMemoryMode = false
+        photos = sourcePhotos
+        currentIndex = 0
+        requestedIndex = 0
+        resetRandomQueue()
+        updateMemoryButton()
+        updatePlaybackSummary()
+        updateMemoryYearsOverlay(for: nil, animated: true)
+        statusLabel.text = "Returned to \(sourcePhotos.count) source photo(s)."
+        showPhoto(at: 0, animated: true, allowLoadingPlaceholder: true, updateDetailImmediately: true)
+    }
+
+    private func updateMemoryYearsOverlay(for photo: FramePhoto?, animated: Bool) {
+        guard isMemoryMode,
+              let date = photo?.captureDate,
+              let photoYear = Calendar.current.dateComponents([.year], from: date).year,
+              let currentYear = Calendar.current.dateComponents([.year], from: Date()).year,
+              currentYear > photoYear else {
+            setMemoryYearsOverlayVisible(false, animated: animated)
+            return
+        }
+        let years = currentYear - photoYear
+        let yearText = years == 1 ? "1 year" : "\(years) years"
+        memoryYearsLabel.text = "\(yearText) ago today..."
+        setMemoryYearsOverlayVisible(true, animated: animated)
+    }
+
+    private func setMemoryYearsOverlayVisible(_ visible: Bool, animated: Bool) {
+        memoryYearsLabel.isHidden = !visible && memoryYearsLabel.alpha == 0
+        let changes = {
+            self.memoryYearsLabel.alpha = visible ? 1 : 0
+        }
+        if animated {
+            UIView.animate(withDuration: 0.25, animations: changes) { _ in
+                self.memoryYearsLabel.isHidden = !visible
+            }
+        } else {
+            changes()
+            memoryYearsLabel.isHidden = !visible
+        }
+    }
+
+    private func updateMemorySideButton(animated: Bool, resetAutoHide: Bool = false) {
+        let visible = !memoryPhotos.isEmpty && !isMemoryMode && !settingsVisible
+        if !visible || resetAutoHide {
+            memorySideButtonAutoHideTimer?.invalidate()
+            memorySideButtonAutoHideTimer = nil
+        }
+        memorySideButton.isHidden = !visible && memorySideButton.alpha == 0
+        let changes = {
+            self.memorySideButton.alpha = visible ? 1 : 0
+        }
+        if animated {
+            UIView.animate(withDuration: 0.25, animations: changes) { _ in
+                self.memorySideButton.isHidden = !visible
+            }
+        } else {
+            changes()
+            memorySideButton.isHidden = !visible
+        }
+        if visible && resetAutoHide {
+            scheduleMemorySideButtonAutoHide()
+        }
+    }
+
+    private func scheduleMemorySideButtonAutoHide() {
+        memorySideButtonAutoHideTimer?.invalidate()
+        memorySideButtonAutoHideTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: false) { [weak self] _ in
+            self?.hideMemorySideButton(animated: true)
+        }
+    }
+
+    private func hideMemorySideButton(animated: Bool) {
+        memorySideButtonAutoHideTimer?.invalidate()
+        memorySideButtonAutoHideTimer = nil
+        let changes = {
+            self.memorySideButton.alpha = 0
+        }
+        if animated {
+            UIView.animate(withDuration: 0.25, animations: changes) { _ in
+                self.memorySideButton.isHidden = true
+            }
+        } else {
+            changes()
+            memorySideButton.isHidden = true
+        }
     }
 
     private func updateDateTimeOverlayText() {
@@ -3014,13 +3771,18 @@ class ViewController: UIViewController, UITextViewDelegate, UIGestureRecognizerD
         }, completion: { _ in
             self.settingsPanel.isHidden = !visible
             self.updateDisplayOverlaysVisibility(animated: true)
+            self.updateMemorySideButton(animated: true)
         })
         updateDisplayOverlaysVisibility(animated: true)
+        updateMemorySideButton(animated: true)
     }
 
     func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
         let point = touch.location(in: view)
         if topPanel.frame.contains(point) || bottomPanel.frame.contains(point) {
+            return false
+        }
+        if !memorySideButton.isHidden && memorySideButton.frame.contains(point) {
             return false
         }
         if settingsVisible && settingsPanel.frame.contains(point) {
@@ -3124,6 +3886,11 @@ class ViewController: UIViewController, UITextViewDelegate, UIGestureRecognizerD
             changes()
         }
         updateDisplayOverlaysVisibility(animated: animated)
+        if visible {
+            updateMemorySideButton(animated: animated, resetAutoHide: true)
+        } else {
+            hideMemorySideButton(animated: animated)
+        }
 
         if visible && rescheduleAutoHide {
             schedulePanelsAutoHide(reset: true)
@@ -3290,15 +4057,113 @@ class ViewController: UIViewController, UITextViewDelegate, UIGestureRecognizerD
 
     @objc private func usePresets() {
         disconnectSMB()
+        disconnectWebDAV()
         cancelRemoteImageLoads()
         clearImageCache()
         saveSourcePreference(.presets)
         applyPhotos(FramePhoto.presets(), source: .presets, status: "Loaded 4 preset landscape photos.")
     }
 
+    private func loadStoredLocalPhotoAlbum() {
+        let status = PHPhotoLibrary.authorizationStatus()
+        guard isPhotoLibraryAuthorized(status) else { return }
+        loadLocalPhotoAlbums()
+        applySelectedLocalPhotoAlbums()
+    }
+
+    private func applySelectedLocalPhotoAlbums() {
+        disconnectSMB()
+        disconnectWebDAV()
+        cancelRemoteImageLoads()
+        clearImageCache()
+
+        let selectedAlbums = allSelectableLocalPhotoAlbums().filter { album in
+            guard let identifier = album.identifier else { return false }
+            return selectedLocalAlbumIdentifiers.contains(identifier)
+        }
+        let newPhotos: [FramePhoto]
+        let sourceTitle: String
+        if selectedLocalAlbumIdentifiers.isEmpty {
+            guard let allPhotos = allPhotosAlbum else {
+                statusLabel.text = "No local photo source is available."
+                return
+            }
+            newPhotos = framePhotos(from: fetchLocalAssets(for: allPhotos))
+            sourceTitle = allPhotos.title
+        } else {
+            newPhotos = framePhotos(from: selectedAlbums)
+            sourceTitle = selectedAlbums.count == 1 ? selectedAlbums[0].title : "\(selectedAlbums.count) albums"
+        }
+
+        guard !newPhotos.isEmpty else {
+            statusLabel.text = "No photos were found in \(sourceTitle)."
+            return
+        }
+
+        let defaults = UserDefaults.standard
+        saveSourcePreference(.localPhotos)
+        if selectedLocalAlbumIdentifiers.isEmpty {
+            defaults.removeObject(forKey: Preferences.localPhotoAlbumIdentifier)
+            defaults.removeObject(forKey: Preferences.localPhotoAlbumIdentifiers)
+        } else {
+            let savedIdentifiers = selectedLocalAlbumIdentifiers.sorted()
+            defaults.set(savedIdentifiers, forKey: Preferences.localPhotoAlbumIdentifiers)
+            defaults.set(savedIdentifiers.first, forKey: Preferences.localPhotoAlbumIdentifier)
+        }
+        defaults.set(sourceTitle, forKey: Preferences.localPhotoAlbumTitle)
+        applyPhotos(newPhotos, source: .localPhotos, status: "Loaded \(newPhotos.count) local photo(s) from \(sourceTitle).")
+    }
+
+    private func allSelectableLocalPhotoAlbums() -> [LocalPhotoAlbum] {
+        return localPhotoAlbums + iCloudSharedPhotoAlbums
+    }
+
+    private func fetchLocalAssets(for album: LocalPhotoAlbum) -> PHFetchResult<PHAsset> {
+        let options = localPhotoFetchOptions()
+        if let collection = album.collection {
+            return PHAsset.fetchAssets(in: collection, options: options)
+        }
+        return PHAsset.fetchAssets(with: .image, options: options)
+    }
+
+    private func localPhotoFetchOptions() -> PHFetchOptions {
+        let options = PHFetchOptions()
+        options.predicate = NSPredicate(format: "mediaType == %d", PHAssetMediaType.image.rawValue)
+        options.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: true)]
+        return options
+    }
+
+    private func framePhotos(from assets: PHFetchResult<PHAsset>) -> [FramePhoto] {
+        var result: [FramePhoto] = []
+        result.reserveCapacity(assets.count)
+        assets.enumerateObjects { asset, index, _ in
+            let filename = PHAssetResource.assetResources(for: asset).first?.originalFilename
+            let title = filename?.isEmpty == false ? filename! : "Local Photo \(index + 1)"
+            result.append(FramePhoto(title: title, image: nil, remoteURL: nil, imageName: nil, localAssetIdentifier: asset.localIdentifier, captureDate: asset.creationDate))
+        }
+        return result
+    }
+
+    private func framePhotos(from albums: [LocalPhotoAlbum]) -> [FramePhoto] {
+        var result: [FramePhoto] = []
+        var seenIdentifiers = Set<String>()
+        for album in albums {
+            let assets = fetchLocalAssets(for: album)
+            assets.enumerateObjects { asset, _, _ in
+                guard !seenIdentifiers.contains(asset.localIdentifier) else { return }
+                seenIdentifiers.insert(asset.localIdentifier)
+                let filename = PHAssetResource.assetResources(for: asset).first?.originalFilename
+                let title = filename?.isEmpty == false ? filename! : "Local Photo \(result.count + 1)"
+                result.append(FramePhoto(title: title, image: nil, remoteURL: nil, imageName: nil, localAssetIdentifier: asset.localIdentifier, captureDate: asset.creationDate))
+            }
+        }
+        return result
+    }
+
     @objc private func loadImmich() {
         view.endEditing(true)
         disconnectSMB()
+        disconnectWebDAV()
         let link = immichTextView.text.trimmingCharacters(in: .whitespacesAndNewlines)
         let password = immichPasswordField.text ?? ""
         UserDefaults.standard.set(link, forKey: Preferences.immichLink)
@@ -3313,7 +4178,14 @@ class ViewController: UIViewController, UITextViewDelegate, UIGestureRecognizerD
                 guard let self = self else { return }
                 switch result {
                 case .success(let album):
-                    let photos = album.photoURLs.map { FramePhoto(title: $0.lastPathComponent.isEmpty ? $0.absoluteString : $0.lastPathComponent, image: nil, remoteURL: $0) }
+                    let photos = album.photos.map {
+                        FramePhoto(
+                            title: $0.title,
+                            image: nil,
+                            remoteURL: $0.url,
+                            captureDate: $0.captureDate
+                        )
+                    }
                     let prefix = automatic ? "Restored" : "Loaded"
                     self.applyPhotos(photos, source: .immich, status: "\(prefix) \(photos.count) of \(album.assetCount) Immich photo(s).")
                 case .failure(let error):
@@ -3342,6 +4214,7 @@ class ViewController: UIViewController, UITextViewDelegate, UIGestureRecognizerD
 
         cancelRemoteImageLoads()
         clearImageCache()
+        disconnectWebDAV()
         disconnectSMB()
 
         UserDefaults.standard.set(smbInput.server, forKey: Preferences.smbURL)
@@ -3381,6 +4254,60 @@ class ViewController: UIViewController, UITextViewDelegate, UIGestureRecognizerD
                     self.updateSettingsLayout()
                     self.statusLabel.text = error.localizedDescription
                     self.updateSMBActionButtons()
+                }
+            }
+        }
+    }
+
+    @objc private func connectWebDAV() {
+        view.endEditing(true)
+        guard !isApplyingWebDAVFolder else { return }
+        let rawURL = (webDAVURLField.text ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let url = URL(string: rawURL),
+              let scheme = url.scheme?.lowercased(),
+              (scheme == "http" || scheme == "https"),
+              url.host?.isEmpty == false else {
+            statusLabel.text = "Enter a full WebDAV URL starting with http:// or https://."
+            return
+        }
+        let username = webDAVUsernameField.text ?? ""
+        let password = webDAVPasswordField.text ?? ""
+        disconnectSMB()
+        disconnectWebDAV()
+        UserDefaults.standard.set(rawURL, forKey: Preferences.webDAVURL)
+        UserDefaults.standard.set(username, forKey: Preferences.webDAVUsername)
+        saveSourcePreference(.webDAV)
+        statusLabel.text = "Connecting WebDAV..."
+        webDAVLoader.connect(to: url, username: username, password: password) { [weak self] result in
+            DispatchQueue.main.async {
+                guard let self = self else { return }
+                switch result {
+                case .success(let connection):
+                    self.webDAVConnection = connection
+                    self.webDAVDirectoryStack = [connection.rootDirectory]
+                    self.webDAVCurrentDirectory = connection.rootDirectory
+                    self.selectedWebDAVDirectories.removeAll()
+                    if let key = self.webDAVAuthKey(for: connection.rootURL) {
+                        self.webDAVAuthHeaders[key] = connection.authHeader
+                    }
+                    if self.settingsTabs.selectedSegmentIndex == 3 {
+                        self.showWebDAVSettings()
+                    } else {
+                        self.webDAVDirectoryTableView.reloadData()
+                        self.updateWebDAVPathLabel()
+                    }
+                    self.statusLabel.text = "Connected WebDAV. Tap folders to select; tap > to browse."
+                    self.updatePlaybackSummary()
+                    self.updateWebDAVActionButtons()
+                case .failure(let error):
+                    self.webDAVCurrentDirectory = nil
+                    self.selectedWebDAVDirectories.removeAll()
+                    self.webDAVDirectoryStack.removeAll()
+                    self.webDAVDirectoryTableView.reloadData()
+                    self.updateWebDAVPathLabel()
+                    self.updateSettingsLayout()
+                    self.statusLabel.text = error.localizedDescription
+                    self.updateWebDAVActionButtons()
                 }
             }
         }
@@ -3508,6 +4435,19 @@ class ViewController: UIViewController, UITextViewDelegate, UIGestureRecognizerD
         updateSMBActionButtons()
     }
 
+    private func disconnectWebDAV() {
+        activeWebDAVApplyID = UUID()
+        finishWebDAVApply()
+        webDAVConnection = nil
+        webDAVCurrentDirectory = nil
+        selectedWebDAVDirectories.removeAll()
+        webDAVDirectoryStack.removeAll()
+        webDAVAuthenticatedURLs.removeAll()
+        webDAVDirectoryTableView.reloadData()
+        updateWebDAVPathLabel()
+        updateWebDAVActionButtons()
+    }
+
     private func updateSMBPathLabel() {
         guard isViewLoaded else { return }
         if let directory = smbCurrentDirectory {
@@ -3524,6 +4464,89 @@ class ViewController: UIViewController, UITextViewDelegate, UIGestureRecognizerD
         smbBackButton.isEnabled = smbDirectoryStack.count > 1 && !isApplyingSMBFolder
         smbApplyButton.isEnabled = smbCurrentDirectory != nil && !isApplyingSMBFolder
         smbDirectoryTableView.allowsSelection = !isApplyingSMBFolder
+    }
+
+    private func updateWebDAVPathLabel() {
+        guard isViewLoaded else { return }
+        if let directory = webDAVCurrentDirectory {
+            webDAVPathLabel.text = directory.url.absoluteString
+        } else {
+            webDAVPathLabel.text = "Not connected."
+        }
+        updateWebDAVActionButtons()
+    }
+
+    private func updateWebDAVActionButtons() {
+        guard isViewLoaded else { return }
+        webDAVConnectButton.isEnabled = !isApplyingWebDAVFolder
+        webDAVBackButton.isEnabled = webDAVDirectoryStack.count > 1 && !isApplyingWebDAVFolder
+        webDAVApplyButton.isEnabled = webDAVCurrentDirectory != nil && !isApplyingWebDAVFolder
+        webDAVDirectoryTableView.allowsSelection = !isApplyingWebDAVFolder
+    }
+
+    @objc private func backWebDAVDirectory() {
+        guard !isApplyingWebDAVFolder else { return }
+        guard webDAVDirectoryStack.count > 1 else { return }
+        webDAVDirectoryStack.removeLast()
+        webDAVCurrentDirectory = webDAVDirectoryStack.last
+        webDAVDirectoryTableView.reloadData()
+        updateWebDAVPathLabel()
+    }
+
+    @objc private func applySelectedWebDAVFolder() {
+        guard !isApplyingWebDAVFolder else { return }
+        guard let connection = webDAVConnection,
+              let currentDirectory = webDAVCurrentDirectory else {
+            statusLabel.text = "Connect WebDAV and select a folder first."
+            return
+        }
+        let directories = selectedWebDAVDirectories.values.sorted {
+            $0.url.absoluteString.localizedStandardCompare($1.url.absoluteString) == .orderedAscending
+        }
+        let directoriesToLoad = directories.isEmpty ? [currentDirectory] : directories
+        let applyID = UUID()
+        activeWebDAVApplyID = applyID
+        isApplyingWebDAVFolder = true
+        updateWebDAVActionButtons()
+        startWebDAVApplyTimeout(for: applyID)
+        cancelRemoteImageLoads()
+        clearImageCache()
+        statusLabel.text = directoriesToLoad.count == 1 ? "Loading WebDAV photos..." : "Loading WebDAV photos from \(directoriesToLoad.count) folders..."
+        webDAVLoader.loadPhotos(in: directoriesToLoad, connection: connection) { [weak self] result in
+            DispatchQueue.main.async {
+                guard let self = self else { return }
+                guard self.activeWebDAVApplyID == applyID else { return }
+                switch result {
+                case .success(let photos):
+                    photos.compactMap { $0.remoteURL }.forEach { self.webDAVAuthenticatedURLs.insert($0) }
+                    let sourceName = directoriesToLoad.count == 1 ? directoriesToLoad[0].name : "\(directoriesToLoad.count) folders"
+                    self.applyPhotos(photos, source: .webDAV, status: "Loaded \(photos.count) WebDAV photo(s) from \(sourceName).")
+                    self.finishWebDAVApply()
+                case .failure(let error):
+                    self.finishWebDAVApply()
+                    self.statusLabel.text = error.localizedDescription
+                }
+            }
+        }
+    }
+
+    private func startWebDAVApplyTimeout(for applyID: UUID) {
+        webDAVApplyTimeoutTimer?.invalidate()
+        webDAVApplyTimeoutTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: false) { [weak self] _ in
+            guard let self = self else { return }
+            guard self.isApplyingWebDAVFolder, self.activeWebDAVApplyID == applyID else { return }
+            self.activeWebDAVApplyID = UUID()
+            self.cancelRemoteImageLoads()
+            self.finishWebDAVApply()
+            self.statusLabel.text = "WebDAV loading timed out. Please try Load again."
+        }
+    }
+
+    private func finishWebDAVApply() {
+        webDAVApplyTimeoutTimer?.invalidate()
+        webDAVApplyTimeoutTimer = nil
+        isApplyingWebDAVFolder = false
+        updateWebDAVActionButtons()
     }
 
     private func startSMBApplyTimeout(for applyID: UUID) {
@@ -3609,6 +4632,26 @@ class ViewController: UIViewController, UITextViewDelegate, UIGestureRecognizerD
         statusLabel.text = selectedSMBDirectories.isEmpty ? "No folders selected. Load will use the current folder." : "\(selectedSMBDirectories.count) SMB folder(s) selected."
     }
 
+    @objc private func selectAllVisibleWebDAVDirectories() {
+        guard !isApplyingWebDAVFolder,
+              let children = webDAVCurrentDirectory?.children,
+              !children.isEmpty else { return }
+        children.forEach { selectedWebDAVDirectories[$0.url] = $0 }
+        webDAVDirectoryTableView.reloadData()
+        updateWebDAVPathLabel()
+        statusLabel.text = "\(selectedWebDAVDirectories.count) WebDAV folder(s) selected."
+    }
+
+    @objc private func excludeAllVisibleWebDAVDirectories() {
+        guard !isApplyingWebDAVFolder,
+              let children = webDAVCurrentDirectory?.children,
+              !children.isEmpty else { return }
+        children.forEach { selectedWebDAVDirectories.removeValue(forKey: $0.url) }
+        webDAVDirectoryTableView.reloadData()
+        updateWebDAVPathLabel()
+        statusLabel.text = selectedWebDAVDirectories.isEmpty ? "No folders selected. Load will use the current folder." : "\(selectedWebDAVDirectories.count) WebDAV folder(s) selected."
+    }
+
     private func smbSelectionIndicatorImage(selected: Bool) -> UIImage {
         let size = CGSize(width: 18, height: 18)
         let rect = CGRect(origin: .zero, size: size).insetBy(dx: 3, dy: 3)
@@ -3630,11 +4673,96 @@ class ViewController: UIViewController, UITextViewDelegate, UIGestureRecognizerD
     }
 
     func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
-        guard tableView == smbDirectoryTableView else { return 0 }
-        return smbCurrentDirectory?.children.count ?? 0
+        if tableView == smbDirectoryTableView {
+            return smbCurrentDirectory?.children.count ?? 0
+        }
+        if tableView == webDAVDirectoryTableView {
+            return webDAVCurrentDirectory?.children.count ?? 0
+        }
+        if tableView == localAlbumsTableView {
+            switch section {
+            case 0: return allPhotosAlbum == nil ? 0 : 1
+            case 1: return allPhotosAlbum == nil ? 0 : max(localPhotoAlbums.count, 1)
+            case 2: return allPhotosAlbum == nil ? 0 : max(iCloudSharedPhotoAlbums.count, 1)
+            default: return 0
+            }
+        }
+        return 0
+    }
+
+    func numberOfSections(in tableView: UITableView) -> Int {
+        if tableView == localAlbumsTableView {
+            return 3
+        }
+        return 1
+    }
+
+    func tableView(_ tableView: UITableView, titleForHeaderInSection section: Int) -> String? {
+        guard tableView == localAlbumsTableView else { return nil }
+        switch section {
+        case 0: return "All Photos"
+        case 1: return "Local Albums"
+        case 2: return "iCloud Shared Albums"
+        default: return nil
+        }
     }
 
     func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
+        if tableView == localAlbumsTableView {
+            let identifier = "LocalPhotoAlbumCell"
+            let cell = tableView.dequeueReusableCell(withIdentifier: identifier) ?? UITableViewCell(style: .subtitle, reuseIdentifier: identifier)
+            if let album = localPhotoAlbum(at: indexPath) {
+                let selected = isLocalPhotoAlbumSelected(album)
+                cell.textLabel?.text = album.title
+                cell.detailTextLabel?.text = "\(album.count) photo(s)"
+                cell.imageView?.image = smbSelectionIndicatorImage(selected: selected)
+                cell.isUserInteractionEnabled = true
+                cell.selectionStyle = .default
+            } else {
+                cell.textLabel?.text = indexPath.section == 1 ? "No local albums" : "No iCloud shared albums"
+                cell.detailTextLabel?.text = nil
+                cell.imageView?.image = nil
+                cell.isUserInteractionEnabled = false
+                cell.selectionStyle = .none
+            }
+            cell.accessoryType = .none
+            forceLightAppearance(cell)
+            forceLightAppearance(cell.contentView)
+            cell.backgroundColor = .white
+            cell.contentView.backgroundColor = .white
+            cell.textLabel?.textColor = settingsPrimaryText
+            cell.detailTextLabel?.textColor = settingsSecondaryText
+            return cell
+        }
+
+        if tableView == webDAVDirectoryTableView {
+            let identifier = "WebDAVDirectoryCell"
+            let cell = (tableView.dequeueReusableCell(withIdentifier: identifier) as? SMBDirectoryCell) ?? SMBDirectoryCell(reuseIdentifier: identifier)
+            if let child = webDAVCurrentDirectory?.children[indexPath.row] {
+                let selected = selectedWebDAVDirectories[child.url] != nil
+                cell.configure(
+                    name: child.name,
+                    path: child.url.absoluteString,
+                    selectedImage: smbSelectionIndicatorImage(selected: selected),
+                    row: indexPath.row,
+                    target: self,
+                    toggleAction: #selector(toggleWebDAVDirectorySelectionFromButton(_:)),
+                    openAction: #selector(openWebDAVDirectoryFromAccessory(_:)),
+                    enabled: !isApplyingWebDAVFolder
+                )
+                cell.selectionStyle = .default
+            } else {
+                cell.configure(name: "", path: "", selectedImage: UIImage(), row: indexPath.row, target: self, toggleAction: #selector(toggleWebDAVDirectorySelectionFromButton(_:)), openAction: #selector(openWebDAVDirectoryFromAccessory(_:)), enabled: false)
+                cell.selectionStyle = .none
+            }
+            forceLightAppearance(cell)
+            forceLightAppearance(cell.contentView)
+            cell.backgroundColor = .white
+            cell.contentView.backgroundColor = .white
+            cell.applyTextColors(primary: settingsPrimaryText, secondary: settingsSecondaryText)
+            return cell
+        }
+
         let identifier = "SMBDirectoryCell"
         let cell = (tableView.dequeueReusableCell(withIdentifier: identifier) as? SMBDirectoryCell) ?? SMBDirectoryCell(reuseIdentifier: identifier)
         if let child = smbCurrentDirectory?.children[indexPath.row] {
@@ -3673,6 +4801,20 @@ class ViewController: UIViewController, UITextViewDelegate, UIGestureRecognizerD
 
     func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
         tableView.deselectRow(at: indexPath, animated: true)
+        if tableView == localAlbumsTableView {
+            toggleLocalPhotoAlbumSelection(at: indexPath)
+            return
+        }
+
+        if tableView == webDAVDirectoryTableView {
+            guard !isApplyingWebDAVFolder,
+                  webDAVCurrentDirectory?.children.indices.contains(indexPath.row) == true else {
+                return
+            }
+            toggleWebDAVDirectorySelection(at: indexPath.row)
+            return
+        }
+
         guard !isApplyingSMBFolder else { return }
         guard tableView == smbDirectoryTableView,
               smbCurrentDirectory?.children.indices.contains(indexPath.row) == true else {
@@ -3681,9 +4823,67 @@ class ViewController: UIViewController, UITextViewDelegate, UIGestureRecognizerD
         toggleSMBDirectorySelection(at: indexPath.row)
     }
 
+    private func localPhotoAlbum(at indexPath: IndexPath) -> LocalPhotoAlbum? {
+        switch indexPath.section {
+        case 0:
+            return indexPath.row == 0 ? allPhotosAlbum : nil
+        case 1:
+            return localPhotoAlbums.indices.contains(indexPath.row) ? localPhotoAlbums[indexPath.row] : nil
+        case 2:
+            return iCloudSharedPhotoAlbums.indices.contains(indexPath.row) ? iCloudSharedPhotoAlbums[indexPath.row] : nil
+        default:
+            return nil
+        }
+    }
+
+    private func isLocalPhotoAlbumSelected(_ album: LocalPhotoAlbum) -> Bool {
+        guard let identifier = album.identifier else {
+            return selectedLocalAlbumIdentifiers.isEmpty
+        }
+        return selectedLocalAlbumIdentifiers.contains(identifier)
+    }
+
+    private func toggleLocalPhotoAlbumSelection(at indexPath: IndexPath) {
+        guard let album = localPhotoAlbum(at: indexPath) else { return }
+        if let identifier = album.identifier {
+            if selectedLocalAlbumIdentifiers.contains(identifier) {
+                selectedLocalAlbumIdentifiers.remove(identifier)
+            } else {
+                selectedLocalAlbumIdentifiers.insert(identifier)
+            }
+        } else {
+            selectedLocalAlbumIdentifiers.removeAll()
+        }
+
+        localAlbumsTableView.reloadData()
+        statusLabel.text = localPhotosSelectionStatusText()
+        applySelectedLocalPhotoAlbums()
+    }
+
     @objc private func toggleSMBDirectorySelectionFromButton(_ sender: UIButton) {
         guard !isApplyingSMBFolder else { return }
         toggleSMBDirectorySelection(at: sender.tag)
+    }
+
+    @objc private func toggleWebDAVDirectorySelectionFromButton(_ sender: UIButton) {
+        guard !isApplyingWebDAVFolder else { return }
+        toggleWebDAVDirectorySelection(at: sender.tag)
+    }
+
+    private func toggleWebDAVDirectorySelection(at row: Int) {
+        guard let children = webDAVCurrentDirectory?.children,
+              children.indices.contains(row) else {
+            return
+        }
+        let child = children[row]
+        if selectedWebDAVDirectories[child.url] == nil {
+            selectedWebDAVDirectories[child.url] = child
+        } else {
+            selectedWebDAVDirectories.removeValue(forKey: child.url)
+        }
+        webDAVDirectoryTableView.reloadRows(at: [IndexPath(row: row, section: 0)], with: .automatic)
+        updateWebDAVPathLabel()
+        statusLabel.text = selectedWebDAVDirectories.isEmpty ? "No folders selected. Load will use the current folder." : "\(selectedWebDAVDirectories.count) WebDAV folder(s) selected."
     }
 
     private func toggleSMBDirectorySelection(at row: Int) {
@@ -3710,6 +4910,40 @@ class ViewController: UIViewController, UITextViewDelegate, UIGestureRecognizerD
             return
         }
         openSMBDirectory(children[row])
+    }
+
+    @objc private func openWebDAVDirectoryFromAccessory(_ sender: UIButton) {
+        guard !isApplyingWebDAVFolder else { return }
+        let row = sender.tag
+        guard let children = webDAVCurrentDirectory?.children,
+              children.indices.contains(row) else {
+            return
+        }
+        openWebDAVDirectory(children[row])
+    }
+
+    private func openWebDAVDirectory(_ child: WebDAVDirectory) {
+        guard let connection = webDAVConnection else { return }
+        statusLabel.text = "Loading WebDAV folder..."
+        webDAVLoader.loadDirectory(url: child.url, connection: connection) { [weak self] result in
+            DispatchQueue.main.async {
+                guard let self = self else { return }
+                switch result {
+                case .success(let loadedDirectory):
+                    guard !loadedDirectory.children.isEmpty else {
+                        self.statusLabel.text = "This folder has no subfolders. Select it and tap Load to play its photos."
+                        return
+                    }
+                    self.webDAVDirectoryStack.append(loadedDirectory)
+                    self.webDAVCurrentDirectory = loadedDirectory
+                    self.webDAVDirectoryTableView.reloadData()
+                    self.updateWebDAVPathLabel()
+                    self.statusLabel.text = "Tap a folder name or circle to select it. Tap > to browse subfolders."
+                case .failure(let error):
+                    self.statusLabel.text = error.localizedDescription
+                }
+            }
+        }
     }
 
     private func openSMBDirectory(_ child: SMBDirectory) {
@@ -3823,12 +5057,16 @@ private struct FramePhoto {
     let image: UIImage?
     let remoteURL: URL?
     let imageName: String?
+    let localAssetIdentifier: String?
+    let captureDate: Date?
 
-    init(title: String, image: UIImage?, remoteURL: URL?, imageName: String? = nil) {
+    init(title: String, image: UIImage?, remoteURL: URL?, imageName: String? = nil, localAssetIdentifier: String? = nil, captureDate: Date? = nil) {
         self.title = title
         self.image = image
         self.remoteURL = remoteURL
         self.imageName = imageName
+        self.localAssetIdentifier = localAssetIdentifier
+        self.captureDate = captureDate
     }
 
     static func presets() -> [FramePhoto] {
@@ -3898,6 +5136,240 @@ private struct FramePhoto {
         context.closePath()
         context.setFillColor(color.cgColor)
         context.fillPath()
+    }
+}
+
+private enum LocalPhotoAlbumKind {
+    case allPhotos
+    case localAlbum
+    case iCloudSharedAlbum
+}
+
+private struct LocalPhotoAlbum {
+    let identifier: String?
+    let title: String
+    let count: Int
+    let collection: PHAssetCollection?
+    let kind: LocalPhotoAlbumKind
+}
+
+private struct WebDAVConnection {
+    let rootURL: URL
+    let rootDirectory: WebDAVDirectory
+    let authHeader: String
+}
+
+private struct WebDAVDirectory {
+    let name: String
+    let url: URL
+    let children: [WebDAVDirectory]
+}
+
+private enum WebDAVError: LocalizedError {
+    case invalidURL
+    case unauthorized
+    case noPhotos(String)
+    case invalidResponse
+
+    var errorDescription: String? {
+        switch self {
+        case .invalidURL:
+            return "Enter a valid WebDAV URL starting with http:// or https://."
+        case .unauthorized:
+            return "WebDAV login failed. Check the username and password."
+        case .noPhotos(let folder):
+            return "No supported photo files were found in \(folder)."
+        case .invalidResponse:
+            return "WebDAV returned an unexpected response."
+        }
+    }
+}
+
+private final class WebDAVPhotoLoader {
+    private let supportedExtensions = Set(["jpg", "jpeg", "png", "heic", "heif", "webp", "bmp"])
+    private let queue = DispatchQueue(label: "com.revivalframe.webdav")
+
+    func connect(to rootURL: URL, username: String, password: String, completion: @escaping (Result<WebDAVConnection, Error>) -> Void) {
+        let normalized = normalizedDirectoryURL(rootURL)
+        let authHeader = basicAuthHeader(username: username, password: password)
+        loadDirectory(url: normalized, authHeader: authHeader) { result in
+            switch result {
+            case .success(let directory):
+                completion(.success(WebDAVConnection(rootURL: normalized, rootDirectory: directory, authHeader: authHeader)))
+            case .failure(let error):
+                completion(.failure(error))
+            }
+        }
+    }
+
+    func loadDirectory(url: URL, connection: WebDAVConnection, completion: @escaping (Result<WebDAVDirectory, Error>) -> Void) {
+        loadDirectory(url: normalizedDirectoryURL(url), authHeader: connection.authHeader, completion: completion)
+    }
+
+    func loadPhotos(in directories: [WebDAVDirectory], connection: WebDAVConnection, completion: @escaping (Result<[FramePhoto], Error>) -> Void) {
+        queue.async {
+            var photos: [FramePhoto] = []
+            do {
+                for directory in directories {
+                    let urls = try self.photoURLsRecursively(in: directory.url, authHeader: connection.authHeader)
+                    photos.append(contentsOf: urls.map { FramePhoto(title: $0.lastPathComponent.removingPercentEncoding ?? $0.lastPathComponent, image: nil, remoteURL: $0) })
+                }
+                if photos.isEmpty {
+                    let name = directories.count == 1 ? directories[0].name : "\(directories.count) folders"
+                    throw WebDAVError.noPhotos(name)
+                }
+                DispatchQueue.main.async { completion(.success(photos)) }
+            } catch {
+                DispatchQueue.main.async { completion(.failure(error)) }
+            }
+        }
+    }
+
+    private func loadDirectory(url: URL, authHeader: String, completion: @escaping (Result<WebDAVDirectory, Error>) -> Void) {
+        queue.async {
+            do {
+                completion(.success(try self.loadDirectorySync(url: url, authHeader: authHeader)))
+            } catch {
+                completion(.failure(error))
+            }
+        }
+    }
+
+    private func loadDirectorySync(url: URL, authHeader: String) throws -> WebDAVDirectory {
+        let entries = try propfind(url: url, depth: "1", authHeader: authHeader)
+        let currentPath = normalizedDirectoryURL(url).path
+        let children = entries
+            .filter { $0.isCollection && normalizedDirectoryURL($0.url).path != currentPath }
+            .map { WebDAVDirectory(name: directoryName(for: $0.url), url: normalizedDirectoryURL($0.url), children: []) }
+            .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+        return WebDAVDirectory(name: directoryName(for: url), url: normalizedDirectoryURL(url), children: children)
+    }
+
+    private func photoURLsRecursively(in url: URL, authHeader: String) throws -> [URL] {
+        let entries = try propfind(url: url, depth: "1", authHeader: authHeader)
+        let currentPath = normalizedDirectoryURL(url).path
+        var urls: [URL] = []
+        for entry in entries {
+            let entryURL = entry.isCollection ? normalizedDirectoryURL(entry.url) : entry.url
+            if entry.isCollection {
+                guard entryURL.path != currentPath else { continue }
+                urls.append(contentsOf: try photoURLsRecursively(in: entryURL, authHeader: authHeader))
+            } else if supportedExtensions.contains(entryURL.pathExtension.lowercased()) {
+                urls.append(entryURL)
+            }
+        }
+        return urls
+    }
+
+    private func propfind(url: URL, depth: String, authHeader: String) throws -> [WebDAVEntry] {
+        var request = URLRequest(url: normalizedDirectoryURL(url))
+        request.httpMethod = "PROPFIND"
+        request.setValue(depth, forHTTPHeaderField: "Depth")
+        request.setValue(authHeader, forHTTPHeaderField: "Authorization")
+        request.setValue("application/xml; charset=utf-8", forHTTPHeaderField: "Content-Type")
+        request.httpBody = """
+        <?xml version="1.0" encoding="utf-8"?>
+        <D:propfind xmlns:D="DAV:"><D:prop><D:resourcetype/></D:prop></D:propfind>
+        """.data(using: .utf8)
+
+        let semaphore = DispatchSemaphore(value: 0)
+        var output: Result<[WebDAVEntry], Error> = .failure(WebDAVError.invalidResponse)
+        URLSession.shared.dataTask(with: request) { data, response, error in
+            defer { semaphore.signal() }
+            if let error = error {
+                output = .failure(error)
+                return
+            }
+            guard let http = response as? HTTPURLResponse else {
+                output = .failure(WebDAVError.invalidResponse)
+                return
+            }
+            if http.statusCode == 401 || http.statusCode == 403 {
+                output = .failure(WebDAVError.unauthorized)
+                return
+            }
+            guard (200..<300).contains(http.statusCode),
+                  let data = data else {
+                output = .failure(WebDAVError.invalidResponse)
+                return
+            }
+            let parser = WebDAVResponseParser(baseURL: url)
+            output = .success(parser.parse(data: data))
+        }.resume()
+        semaphore.wait()
+        return try output.get()
+    }
+
+    private func normalizedDirectoryURL(_ url: URL) -> URL {
+        guard !url.path.hasSuffix("/") else { return url }
+        return url.appendingPathComponent("")
+    }
+
+    private func directoryName(for url: URL) -> String {
+        let trimmed = url.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        return trimmed.split(separator: "/").last.map(String.init)?.removingPercentEncoding ?? url.host ?? "WebDAV"
+    }
+
+    private func basicAuthHeader(username: String, password: String) -> String {
+        let token = "\(username):\(password)".data(using: .utf8)?.base64EncodedString() ?? ""
+        return "Basic \(token)"
+    }
+}
+
+private struct WebDAVEntry {
+    let url: URL
+    let isCollection: Bool
+}
+
+private final class WebDAVResponseParser: NSObject, XMLParserDelegate {
+    private let baseURL: URL
+    private var entries: [WebDAVEntry] = []
+    private var currentElement = ""
+    private var currentHref = ""
+    private var currentIsCollection = false
+    private var insideResponse = false
+
+    init(baseURL: URL) {
+        self.baseURL = baseURL
+    }
+
+    func parse(data: Data) -> [WebDAVEntry] {
+        let parser = XMLParser(data: data)
+        parser.delegate = self
+        parser.parse()
+        return entries
+    }
+
+    func parser(_ parser: XMLParser, didStartElement elementName: String, namespaceURI: String?, qualifiedName qName: String?, attributes attributeDict: [String : String] = [:]) {
+        let name = localName(elementName)
+        currentElement = name
+        if name == "response" {
+            insideResponse = true
+            currentHref = ""
+            currentIsCollection = false
+        } else if insideResponse && name == "collection" {
+            currentIsCollection = true
+        }
+    }
+
+    func parser(_ parser: XMLParser, foundCharacters string: String) {
+        guard insideResponse, currentElement == "href" else { return }
+        currentHref += string
+    }
+
+    func parser(_ parser: XMLParser, didEndElement elementName: String, namespaceURI: String?, qualifiedName qName: String?) {
+        let name = localName(elementName)
+        if name == "response" {
+            if let url = URL(string: currentHref.trimmingCharacters(in: .whitespacesAndNewlines), relativeTo: baseURL)?.absoluteURL {
+                entries.append(WebDAVEntry(url: url, isCollection: currentIsCollection))
+            }
+            insideResponse = false
+        }
+        currentElement = ""
+    }
+
+    private func localName(_ name: String) -> String {
+        return name.split(separator: ":").last.map(String.init) ?? name
     }
 }
 
@@ -4081,7 +5553,13 @@ private extension String {
 private struct ImmichAlbum {
     let name: String
     let assetCount: Int
-    let photoURLs: [URL]
+    let photos: [ImmichPhoto]
+}
+
+private struct ImmichPhoto {
+    let title: String
+    let url: URL
+    let captureDate: Date?
 }
 
 private enum ImmichError: LocalizedError {
@@ -4118,6 +5596,9 @@ private final class ImmichShareClient {
         struct Asset: Decodable {
             let id: String
             let type: String
+            let originalFileName: String?
+            let fileCreatedAt: String?
+            let localDateTime: String?
         }
         let albumName: String?
         let assetCount: Int?
@@ -4178,10 +5659,10 @@ private final class ImmichShareClient {
                 completion(.failure(error))
             case .success(let album):
                 if let assets = album.assets, !assets.isEmpty {
-                    let photoURLs = assets
+                    let photos = assets
                         .filter { $0.type == "IMAGE" }
-                        .map { parsed.originalURL(assetId: $0.id) }
-                    self.completeAlbum(name: album.albumName ?? fallbackName, assetCount: album.assetCount ?? fallbackAssetCount, photoURLs: photoURLs, completion: completion)
+                        .map { self.immichPhoto(from: $0, parsed: parsed) }
+                    self.completeAlbum(name: album.albumName ?? fallbackName, assetCount: album.assetCount ?? fallbackAssetCount, photos: photos, completion: completion)
                     return
                 }
                 self.loadAlbumAssets(parsed: parsed, albumId: albumId, albumName: album.albumName ?? fallbackName, assetCount: album.assetCount ?? fallbackAssetCount, completion: completion)
@@ -4200,24 +5681,58 @@ private final class ImmichShareClient {
             case .failure(let error):
                 completion(.failure(error))
             case .success(let search):
-                let photoURLs = search.assets.items
+                let photos = search.assets.items
                     .filter { $0.type == "IMAGE" }
-                    .map { parsed.originalURL(assetId: $0.id) }
-                self.completeAlbum(name: albumName, assetCount: assetCount ?? search.assets.total ?? search.assets.count, photoURLs: photoURLs, completion: completion)
+                    .map { self.immichPhoto(from: $0, parsed: parsed) }
+                self.completeAlbum(name: albumName, assetCount: assetCount ?? search.assets.total ?? search.assets.count, photos: photos, completion: completion)
             }
         }
     }
 
-    private func completeAlbum(name: String?, assetCount: Int?, photoURLs: [URL], completion: @escaping (Result<ImmichAlbum, Error>) -> Void) {
-        guard !photoURLs.isEmpty else {
+    private func completeAlbum(name: String?, assetCount: Int?, photos: [ImmichPhoto], completion: @escaping (Result<ImmichAlbum, Error>) -> Void) {
+        guard !photos.isEmpty else {
             completion(.failure(ImmichError.noPhotos))
             return
         }
         completion(.success(ImmichAlbum(
             name: name ?? "Immich album",
-            assetCount: assetCount ?? photoURLs.count,
-            photoURLs: photoURLs
+            assetCount: assetCount ?? photos.count,
+            photos: photos
         )))
+    }
+
+    private func immichPhoto(from asset: AlbumResponse.Asset, parsed: ParsedImmichShare) -> ImmichPhoto {
+        let url = parsed.originalURL(assetId: asset.id)
+        let title = asset.originalFileName?.isEmpty == false ? asset.originalFileName! : (url.lastPathComponent.isEmpty ? url.absoluteString : url.lastPathComponent)
+        return ImmichPhoto(
+            title: title,
+            url: url,
+            captureDate: parseImmichDate(asset.localDateTime) ?? parseImmichDate(asset.fileCreatedAt)
+        )
+    }
+
+    private func parseImmichDate(_ value: String?) -> Date? {
+        guard let value = value, !value.isEmpty else { return nil }
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let date = formatter.date(from: value) {
+            return date
+        }
+        formatter.formatOptions = [.withInternetDateTime]
+        if let date = formatter.date(from: value) {
+            return date
+        }
+
+        let dateFormatter = DateFormatter()
+        dateFormatter.locale = Locale(identifier: "en_US_POSIX")
+        dateFormatter.timeZone = TimeZone.current
+        for format in ["yyyy-MM-dd'T'HH:mm:ss.SSS", "yyyy-MM-dd'T'HH:mm:ss"] {
+            dateFormatter.dateFormat = format
+            if let date = dateFormatter.date(from: value) {
+                return date
+            }
+        }
+        return nil
     }
 
     private func getJSON<T: Decodable>(_ url: URL, completion: @escaping (Result<T, Error>) -> Void) {
